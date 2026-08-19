@@ -1,0 +1,39 @@
+# --- secrets: nothing in here ever reaches a commit ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- dependencies ---
+node_modules/
+frontend/node_modules/
+
+# --- hardhat build output ---
+artifacts/
+cache/
+types/
+coverage/
+coverage.json
+*.lcov
+
+# --- ignition: deployment journals contain deployed addresses and tx hashes.
+# Ignored while the deployment is throwaway; F4 decides whether to commit the
+# Sepolia deployment folder so the frontend can read addresses from it. ---
+ignition/deployments/
+
+# --- frontend ---
+frontend/dist/
+frontend/.vite/
+.vercel/
+
+# --- tooling / editors ---
+.code-review-graph/
+.DS_Store
+Thumbs.db
+.idea/
+*.log
+npm-debug.log*
+
+# personal Claude Code settings, not shared
+.claude/settings.local.json

@@ -1,0 +1,9 @@
+node_modules/
+artifacts/
+cache/
+coverage/
+types/
+ignition/deployments/
+frontend/dist/
+frontend/src/generated.ts
+package-lock.json
