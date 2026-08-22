@@ -1,15 +1,28 @@
 {
   "extends": "solhint:recommended",
   "rules": {
-    "compiler-version": ["error", "^0.8.28"],
-    "func-visibility": ["error", { "ignoreConstructors": true }],
+    "compiler-version": [
+      "error",
+      "^0.8.28"
+    ],
+    "func-visibility": [
+      "error",
+      {
+        "ignoreConstructors": true
+      }
+    ],
     "not-rely-on-time": "off",
     "gas-custom-errors": "error",
     "no-console": "error",
     "avoid-low-level-calls": "off",
-    "max-line-length": ["error", 120],
+    "max-line-length": [
+      "error",
+      120
+    ],
     "reason-string": "off",
     "ordering": "warn",
-    "named-parameters-mapping": "off"
+    "named-parameters-mapping": "off",
+    "gas-indexed-events": "off",
+    "gas-strict-inequalities": "off"
   }
 }
