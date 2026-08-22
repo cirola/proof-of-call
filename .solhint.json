@@ -1,10 +1,7 @@
 {
   "extends": "solhint:recommended",
   "rules": {
-    "compiler-version": [
-      "error",
-      "^0.8.28"
-    ],
+    "compiler-version": ["error", "^0.8.28"],
     "func-visibility": [
       "error",
       {
@@ -15,10 +12,7 @@
     "gas-custom-errors": "error",
     "no-console": "error",
     "avoid-low-level-calls": "off",
-    "max-line-length": [
-      "error",
-      120
-    ],
+    "max-line-length": ["error", 120],
     "reason-string": "off",
     "ordering": "warn",
     "named-parameters-mapping": "off",
