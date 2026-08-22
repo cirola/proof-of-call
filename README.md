@@ -152,7 +152,9 @@ Stated here rather than discovered later.
 | `MockV3Aggregator.sol`    | Test-only feed that lets tests drive an exact price at an exact timestamp |
 
 Detail in [`docs/architecture.md`](./docs/architecture.md). Every non-obvious
-choice is recorded in [`docs/decisions.md`](./docs/decisions.md).
+choice is recorded in [`docs/decisions.md`](./docs/decisions.md), and
+[`docs/worklog.md`](./docs/worklog.md) tracks what is built so far and what
+comes next.
 
 ## Stack
 
