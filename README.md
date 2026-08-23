@@ -3,8 +3,11 @@
 An on-chain registry for market predictions, where the track record includes the
 losses because the protocol will not let you delete them.
 
-> **Status:** in development. Phase F0 (scaffold) complete.
-> Deployment links, coverage and CI badges land in F4 and F6.
+> **Status:** contracts complete and tested; frontend in progress.
+> Phases F0–F4 and F6 done — scaffold, oracle layer, full commit-reveal
+> lifecycle, Ignition deployment module, CI. 122 tests, 100% line and statement
+> coverage on both production contracts. Deployment links land when the Sepolia
+> deployment is run.
 
 ---
 
@@ -51,10 +54,12 @@ but unreadable                                       loss    ->  stake slashed
 4. **Settlement.** Right: the stake comes back. Wrong, or never revealed: the
    stake is gone.
 
-## The three attacks the design exists to answer
+## The four attacks the design exists to answer
 
 The mechanism above is easy. What makes it hold up is what happens when someone
-tries to game it. These are the attacks that shaped the contracts.
+tries to game it. These are the attacks that shaped the contracts. The first
+three come from the brief; the fourth was found while writing the settlement
+code, and it would have quietly undone all three.
 
 ### A. Selective reveal — lying by omission
 
@@ -111,6 +116,33 @@ When the feed is unhealthy the reveal reverts and the call stays open, so the
 analyst retries once the feed recovers. Failing closed costs a retry. Failing
 open would settle real money against a fabricated price.
 
+### D. Settling at a moment of your choosing
+
+This one is not in the usual commit-reveal writeups, and it is the mistake this
+project nearly shipped.
+
+The reveal window is 48 hours wide. If the contract read the _latest_ price when
+the reveal transaction was mined, the analyst would not be settling against the
+price at their deadline — they would be settling against the price at whatever
+moment they chose to press the button, anywhere inside two days.
+
+So: commit "ETH above $3,000" for Friday noon. Friday noon arrives and ETH is at
+$2,900; the call is wrong. Do nothing. Sunday at 3am ETH ticks to $3,010 —
+reveal, and the contract records a win. Every losing call becomes a free
+two-day option on being right later, and the flawless track record is back.
+
+**Answer.** Settlement reads the last Chainlink round at or before the deadline.
+The round id is supplied by the caller, because Chainlink has no
+timestamp-to-round index, and the resolver **verifies** it instead of trusting
+it: the round must exist, predate the deadline, sit inside that feed's staleness
+window relative to the deadline, and have no successor that also predates it.
+That last check is what leaves nothing to cherry-pick — for a given deadline
+exactly one round is accepted.
+
+Written up in [ADR-010](./docs/decisions/ADR-010-settlement-reads-the-round-covering-the-deadline.md),
+and there is a test that runs the attack: a call that is wrong at its deadline,
+a price that crosses a day later, and a reveal that still records a loss.
+
 ## Known limitations
 
 Stated here rather than discovered later.
@@ -141,20 +173,41 @@ Stated here rather than discovered later.
 6. **Admin keys are a real trust assumption.** The account holding
    `DEFAULT_ADMIN_ROLE` can swap the price resolver, retarget the treasury and
    change protocol parameters. No timelock in the MVP. Named, not hidden.
+7. **A dead feed can cost an analyst their stake.** If no Chainlink round exists
+   within the staleness window of a call's deadline, settlement fails closed and
+   the call cannot be revealed. Once the window shuts it forfeits, and an oracle
+   outage is written into a human's public record as evasion. `maxHorizon` of 30
+   days bounds the exposure and the resolver is swappable, but the fix — a
+   `Voided` state that returns the stake and counts as neither win nor forfeit —
+   needs a governance answer the MVP does not have. Reasoning in
+   [`docs/threat-model.md`](./docs/threat-model.md).
+8. **A winner whose address rejects ETH cannot be paid.** Their reveal reverts
+   and the call eventually forfeits to the treasury. A pull-payment escrow would
+   fix it and would add a second balance to reason about; for an MVP whose users
+   are EOAs, the trade is not worth it.
+9. **Revealing requires off-chain work.** The frontend has to locate the
+   settlement round by binary search over the feed's history before it can build
+   the reveal transaction. Standard for anything that settles at an expiry, but
+   it means the contract is not usable from a block explorer alone.
 
 ## Architecture
 
-| Contract                  | Responsibility                                                            |
-| ------------------------- | ------------------------------------------------------------------------- |
-| `CallRegistry.sol`        | Commit-reveal lifecycle, stakes, settlement, analyst stats                |
-| `PriceOracleResolver.sol` | Chainlink adapter: feed registry, staleness, decimal normalization        |
-| `IPriceResolver.sol`      | The seam between them — the registry never learns what an oracle is       |
-| `MockV3Aggregator.sol`    | Test-only feed that lets tests drive an exact price at an exact timestamp |
+| Contract                  | Responsibility                                                              |
+| ------------------------- | --------------------------------------------------------------------------- |
+| `CallRegistry.sol`        | Commit-reveal lifecycle, stakes, settlement, analyst stats                  |
+| `PriceOracleResolver.sol` | Chainlink adapter: feed registry, per-feed staleness, decimal normalization |
+| `IPriceResolver.sol`      | The seam between them — the registry never learns what an oracle is         |
+| `MockV3Aggregator.sol`    | Test-only feed that lets tests drive an exact price at an exact timestamp   |
+| `EthRejecter.sol`         | Test-only analyst that cannot receive ETH                                   |
+| `ReentrantTreasury.sol`   | Test-only treasury that calls back into the registry while being paid       |
 
-Detail in [`docs/architecture.md`](./docs/architecture.md). Every non-obvious
-choice is recorded in [`docs/decisions.md`](./docs/decisions.md), and
-[`docs/worklog.md`](./docs/worklog.md) tracks what is built so far and what
-comes next.
+Detail in [`docs/architecture.md`](./docs/architecture.md). The eight properties
+the protocol claims, each mapped to the test that pins it, are in
+[`docs/invariants.md`](./docs/invariants.md); the attacks and the residual risks
+are in [`docs/threat-model.md`](./docs/threat-model.md). Every non-obvious choice
+is recorded in [`docs/decisions.md`](./docs/decisions.md), and
+[`docs/worklog.md`](./docs/worklog.md) tracks what is built so far and what comes
+next.
 
 ## Stack
 
@@ -165,11 +218,16 @@ viem 2 · Hardhat Ignition · React + Vite + wagmi 2 + RainbowKit 2
 
 ```bash
 npm install
-npm run build      # compile contracts
-npm test           # node:test + viem
-npm run coverage   # built-in coverage (Hardhat 3; not solidity-coverage)
-npm run lint       # solhint
+npm run build          # compile contracts
+npm test               # both runners: node:test + viem, and Solidity fuzz
+npm run test:nodejs    # TypeScript scenarios only
+npm run test:solidity  # Solidity fuzz properties only
+npm run coverage       # built-in coverage (Hardhat 3; not solidity-coverage)
+npm run lint           # solhint
+npm run format:check   # prettier
 ```
+
+CI runs all of the above on every push and pull request.
 
 Secrets never live in `.env`. Deployment credentials go in Hardhat 3's encrypted
 keystore and are read through `configVariable()`:
@@ -182,6 +240,19 @@ npx hardhat keystore set ETHERSCAN_API_KEY
 
 Use a dedicated, disposable deploy wallet funded from a faucet. Never one that
 has touched mainnet.
+
+Then deploy and verify in one command:
+
+```bash
+npm run deploy:sepolia
+```
+
+The Ignition module deploys the resolver, registers BTC/USD and ETH/USD against
+the Chainlink proxies, and deploys the registry pointed at it — in that order,
+so there is never a window where the protocol is live and settlement would
+revert on a missing feed. Everything network-specific is a parameter with a
+Sepolia default. The module is exercised by a test on the simulated network
+before it is ever pointed at a real one.
 
 ## License
 

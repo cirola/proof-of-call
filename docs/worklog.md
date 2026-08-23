@@ -2,30 +2,34 @@
 title: Worklog
 status: living
 tags: [worklog, progress, handoff]
-updated: 2026-08-21
+updated: 2026-08-23
 ---
 
 # Worklog
 
 Session-by-session record of what was built, what was decided, and what the next
-session picks up. Architecture decisions live in [[decisions]]; this file is the
-narrative and the handoff.
+session picks up. Architecture decisions live in [[decisions]]; the properties
+the protocol claims live in [[invariants]]; the attacks and residual risks live
+in [[threat-model]]. This file is the narrative and the handoff.
 
-**Current position: F1 complete and committed. F2 not started.**
+**Current position: contracts complete. F0–F4 and F6 done and committed. F5
+(frontend) is the only phase left.**
 
 ---
 
 ## Status board
 
-| Phase | Scope                                         | State                                                    |
-| ----- | --------------------------------------------- | -------------------------------------------------------- |
-| F0    | Scaffold, hygiene, docs                       | done — 4 commits                                         |
-| F1    | Oracle layer                                  | done — 1 commit, 30 tests, 100% coverage on the resolver |
-| F2    | `commitCall`, state, events                   | **next**                                                 |
-| F3    | `revealCall`, `forfeit`, settlement, fuzzing  | pending                                                  |
-| F4    | Ignition deploy to Sepolia + Etherscan verify | pending                                                  |
-| F5    | Frontend                                      | pending                                                  |
-| F6    | CI + final docs                               | pending                                                  |
+| Phase | Scope                                        | State                                                     |
+| ----- | -------------------------------------------- | --------------------------------------------------------- |
+| F0    | Scaffold, hygiene, docs                      | done — 4 commits                                          |
+| F1    | Oracle layer                                 | done — 1 commit                                           |
+| F1.5  | Settlement at the deadline (`getPriceAt`)    | done — 1 commit. Not planned; see below                   |
+| F2    | `commitCall`, state, events                  | done — 1 commit                                           |
+| F3    | `revealCall`, `forfeit`, settlement, fuzzing | done — 1 commit                                           |
+| F4    | Ignition deploy module                       | done — module written and tested on the simulated network |
+| F6    | CI + docs                                    | done — GitHub Actions, invariants doc, threat model       |
+| F5    | Frontend                                     | **next**                                                  |
+| —     | Actual Sepolia deployment + Etherscan verify | pending — needs a funded faucet wallet                    |
 
 ## Verify the current state in one command
 
@@ -33,228 +37,257 @@ narrative and the handoff.
 npm run build && npm test && npm run lint && npm run format:check
 ```
 
-Expected today: compiles, **30 passing**, solhint silent, prettier clean.
-Coverage: `npx hardhat test --coverage` reports `PriceOracleResolver.sol` at
-100.00 line / 100.00 statement.
+Expected today: compiles, **122 passing** (116 node:test, 6 Solidity fuzz),
+solhint silent, prettier clean.
+
+`npm run coverage` reports `CallRegistry.sol` and `PriceOracleResolver.sol` at
+**100.00 line / 100.00 statement**, 97.51% overall — the remainder is unexercised
+branches in the test mocks.
 
 ---
 
 ## Session 1 — 2026-08-19 to 2026-08-21
 
-### Before any code: the brief was reviewed and six things were changed
+Scaffold, docs, and the oracle layer. Six overrides to the original brief, each
+with an ADR: pinned wagmi 2 against RainbowKit's peer range, per-feed staleness
+instead of a global threshold, `Pausable` on commits only, viem assertions
+instead of Chai, `committedAt` out of storage, `Above`/`Below` instead of
+`Long`/`Short`. A fourth attack — the trivially safe target — was added to the
+threat model and shipped as a known limitation rather than quietly omitted.
 
-The original brief was treated as a proposal, not as gospel. Each override has
-its own ADR; the short version:
+`PriceOracleResolver` landed with 30 tests and 100% coverage: `setFeed` probes
+`decimals()` through `try/catch` so a mistyped aggregator fails at configuration
+rather than at settlement, `getPrice` validates freshness before content, and
+`decimals()` is read live on every call rather than cached — a cache that
+disagreed with the feed would misprice by orders of magnitude **without
+reverting**.
 
-| #                                        | Change                             | Why it mattered                                                                                                                                                                           |
-| ---------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [[ADR-001-pin-wagmi-v2]]                 | Pin `wagmi@2.19.5`                 | `wagmi@3.7.6` is current, but RainbowKit 2.2.11 declares `wagmi: "^2.9.0"` and ships no v3 line. `npm install wagmi` would break the peer range.                                          |
-| [[ADR-002-per-feed-staleness-threshold]] | Staleness per feed, not global     | Heartbeats differ per feed; one global value is too strict for the slow feed or too loose for the fast one. Also dropped the `answeredInRound >= roundId` check — dead code on OCR feeds. |
-| [[ADR-003-pause-blocks-commit-only]]     | `Pausable` gates `commitCall` only | A pause reaching `revealCall` lets an admin run out the reveal window and destroy user stakes. That is a confiscation switch, not an emergency brake.                                     |
-| [[ADR-005-viem-assertions-over-chai]]    | Drop Chai                          | The contracts use custom errors exclusively. Chai would degrade to substring-matching formatted messages; `hardhat-viem-assertions` decodes against the ABI.                              |
-| [[ADR-006-drop-committedat-from-struct]] | `committedAt` out of storage       | It occupied a whole 4th slot (20,000 gas per commit) and no on-chain path reads it. It lives in `CallCommitted` instead.                                                                  |
-| [[ADR-007-above-below-not-long-short]]   | `Direction { Above, Below }`       | "Long/Short" names a position with scaling P&L. This contract stores a binary claim about where a price sits at one timestamp.                                                            |
+Full detail is in the git history; the parts still worth knowing are below under
+_Environment facts_.
 
-**A fourth attack was added to the threat model.** The brief covered selective
-reveal, commit brute force and stale oracles. It did not cover the _trivial
-target_: commit "ETH above $1" a hundred times and every call reveals as a win.
-[[ADR-004-trivial-target-measured-off-chain]] records why the defence is
-computed off-chain for the MVP, and it ships as known limitation #5 in the
-README rather than being quietly omitted.
+---
 
-**Protocol parameters were fixed** in [[ADR-009-initial-protocol-parameters]]:
-`minStake` 0.001 ETH, `minHorizon` 1 hour, `maxHorizon` 30 days, `revealWindow`
-48 hours, assets BTC/USD and ETH/USD.
+## Session 2 — 2026-08-23
 
-### F0 — Scaffold
+Four commits: `getPriceAt`, `commitCall`, the reveal half, and deployment + CI.
+The docs were rewritten to match.
 
-Installed, with versions verified against the registry at install time rather
-than taken from the brief:
+### The thing that changed the design
 
-```
-hardhat 3.13.0   @nomicfoundation/hardhat-toolbox-viem 5.0.7
-@openzeppelin/contracts 5.6.1   @chainlink/contracts 1.5.0
-solhint 6.2.4   prettier + prettier-plugin-solidity 2.4.1
-```
+F3 opened by writing `revealCall`, which was specified to call
+`IPriceResolver.getPrice()` — `latestRoundData()`. That is wrong, and not in a
+subtle way.
 
-One toolbox package instead of individually installed plugins: it version-locks
-ignition, keystore, viem, verify, network-helpers and the `node:test` runner
-against each other.
+The reveal window is 48 hours. Reading the latest price at reveal time does not
+settle a prediction at its deadline; it settles it at **whatever moment the
+analyst chooses to send the transaction**. Commit "ETH above $3,000" for Friday
+noon, watch it come in at $2,900, do nothing, and reveal on Sunday when it ticks
+to $3,010. Every losing call is a free two-day option on being right later, and
+the flawless-track-record problem the whole project exists to solve walks back in
+through the settlement path.
 
-`hardhat.config.ts` carries two solc profiles. `default` leaves the optimizer
-**off** so stack traces and coverage line maps stay accurate; `production`
-enables it. Running coverage against optimized bytecode produces hit-counts that
-do not match the source.
+Shortening the window does not fix it — it only prices it.
 
-Secrets go through `configVariable()`, which resolves from the encrypted Hardhat
-keystore before falling back to the environment. `.env.example` documents names
-only.
+The fix is [[ADR-010-settlement-reads-the-round-covering-the-deadline]]:
+`IPriceResolver` gained `getPriceAt(assetId, atTimestamp, roundId)`. Chainlink
+has no timestamp-to-round index, so the round id comes from the caller and is
+**verified rather than trusted** — it must exist, predate the timestamp, sit
+inside the feed's staleness window relative to it, and have no successor that
+also predates it. That last check is the one that closes the attack: without it
+the revealer scans backwards and settles against whichever historical price
+flatters them. Exactly one round satisfies all four for a given deadline.
 
-`contracts/interfaces/IPriceResolver.sol` was written in F0 rather than F1 — it
-defines the boundary F1 implements, and it makes `hardhat build` verify
-something real instead of compiling an empty directory.
+Residual gap, named rather than hidden: `roundId + 1` cannot cross a Chainlink
+phase boundary, because a round id is `(phaseId << 64) | aggregatorRoundId`. The
+staleness bound caps the exploitable window at one heartbeat, on the single call
+whose deadline lands inside an aggregator rotation.
 
-### F1 — Oracle layer
+### F2 — commit
 
-Three files: `PriceOracleResolver.sol`, `mocks/MockV3Aggregator.sol`, and
-`test/PriceOracleResolver.test.ts`.
+Three storage decisions carry the weight, and all three are in the contract's
+NatSpec:
 
-**Storage.** `FeedConfig { AggregatorV3Interface aggregator; uint32 staleAfter; }`
-is 20 + 4 bytes, so a feed configuration is exactly one slot. Registering a feed
-and setting its threshold is one atomic call, which makes the "registered but
-threshold still zero" state — which would refuse every price — unreachable.
+- **`revealWindow` is snapshotted into each call at commit time.** Read live at
+  reveal, an admin lowering it would retroactively close the window on open
+  calls and force forfeits on analysts who did nothing wrong. `uint24` (~194
+  days) is what makes the snapshot fit: `address` + `uint64` + `uint24` +
+  `Status` is exactly 32 bytes, so the slot is full rather than a fourth slot
+  being opened.
+- **Commitment uniqueness is scoped per analyst, not globally.** The analyst is
+  in the preimage, so two honest analysts cannot collide and a global mapping
+  buys nothing — but it would hand a watcher a griefing move: front-run a
+  broadcast commitment with the identical hash and the victim's own transaction
+  reverts. Same single `SSTORE` either way.
+- **The sum of open stakes is not stored**, for the same reason `committedAt` is
+  not: derivable, and a cold `SSTORE` per commit to serve readers who can sum
+  the calls themselves. Invariant 6 is asserted by summing in the tests.
 
-**`setFeed` probes `decimals()` through `try/catch`.** A mistyped aggregator
-address is a realistic deployment error. Without the probe it stays invisible
-until the first reveal, where it surfaces as a failed settlement with money on
-the line instead of a failed configuration transaction.
+`PAUSER_ROLE` is separate from `DEFAULT_ADMIN_ROLE` so the key that stops the
+protocol in an incident need not be the key that can retarget the treasury. No
+`receive` and no `fallback`: every wei in the contract arrived through
+`commitCall`.
 
-**`getPrice` validates freshness before content**, in this order:
-`RoundNotComplete` (`updatedAt == 0`), `FutureTimestamp`, `StalePrice`,
-`NonPositivePrice`. The future-timestamp check exists so the staleness
-subtraction cannot underflow into an anonymous arithmetic panic.
+### F3 — reveal, forfeit, settlement
 
-**`decimals()` is read live on every call, not cached at registration.** Caching
-saves one `STATICCALL` per settlement; a cache that disagreed with the feed would
-misprice by ten orders of magnitude and settle stakes against the wrong number
-_without reverting_. Asymmetric trade, so the gas is paid.
+`revealCall` takes its plaintext as one `calldata` struct. That is partly
+ergonomics and partly a hard constraint: with five separate parameters the
+function does not fit in the EVM's sixteen stack slots, and the default build
+profile deliberately leaves the optimizer off so coverage and stack traces stay
+accurate.
 
-**The mock is hand-written**, not imported from the Chainlink package. Their own
-mock stamps `block.timestamp` on every update, which makes the staleness path
-unreachable in tests. Ours exposes `setUpdatedAt` and `setRoundData`. It
-implements the _Chainlink_ interface rather than `IPriceResolver`, so tests
-exercise the real adapter's normalization and freshness code instead of stubbing
-it out.
+`deadline` and `analyst` come from storage rather than calldata, so they cannot
+be made to disagree with what was committed. `roundId` never enters the preimage
+— it is a lookup key, not a prediction.
 
-**Tests worth knowing about:**
+**On reentrancy, asked rather than reflexed.** Strict CEI already closes it:
+`status` leaves `Committed` before any ETH moves, and no path returns a call to
+`Committed`, so a re-entrant reveal or forfeit hits `CallNotOpen`. The guard is
+kept anyway because the ordering is the _only_ thing holding it up and nothing at
+the call site announces that — and under EIP-1153 (Cancun is already the target)
+`ReentrancyGuardTransient` costs roughly 100 gas rather than a 20,000-gas cold
+`SSTORE`. At 20,000 the answer might have gone the other way.
+[[ADR-011-transient-reentrancy-guard-over-plain-cei]].
 
-- The staleness boundary is asserted on both sides — age `== threshold` passes,
-  age `== threshold + 1` reverts — so an off-by-one cannot cause spurious
-  settlement failures on a healthy feed.
-- Two feeds at the same age with different thresholds produce opposite outcomes.
-  That test is the per-feed argument made executable; a global threshold could
-  not produce it.
-- `setFeedAge()` pins the observing block timestamp with
-  `time.setNextBlockTimestamp` + `mine`. Writing `now - age` and reading back
-  drifts, because every transaction mines a block and moves the clock.
+`forfeit` is permissionless because attack A depends on it: if only the analyst
+could record their own forfeit, a hundred-call spray would leave the unrevealed
+ninety-seven sitting in `Committed` and the visible record would still be
+flawless.
+
+ETH leaves through `call{value:}` with a checked return, never `transfer()` —
+the 2,300-gas stipend is a hard-coded assumption about opcode pricing that has
+already been invalidated once, and it would lock out a multisig treasury.
+
+### Tests worth knowing about
+
+- **The ADR-010 attack is a test, not a claim.** _"ignores a later price that
+  would have flipped the outcome"_ commits a call, settles it wrong at the
+  deadline, moves the price across the target a day later, and asserts the
+  reveal still records a loss.
+- **`ReentrantTreasury` wraps its callback in `try/catch`** so the failure does
+  not simply bubble up as `StakeTransferFailed`. The test then asserts the
+  re-entrant call was rejected _and_ the stake moved exactly once — which is what
+  distinguishes "the attack failed" from "the whole transaction reverted".
+- **Six Solidity fuzz properties** over the commitment, in `CommitmentFuzz.t.sol`.
+  The TypeScript suite asserts named scenarios; the fuzzer searches for the input
+  nobody thought to write down, which is exactly the risk profile of a hash.
+- **The Ignition module is executed by a test** on the simulated network, with
+  mock aggregators substituted for the two Sepolia proxies. A deploy script that
+  has never run is a guess, and the place it fails is Sepolia, after gas.
 
 ### Problems hit, and the fixes
 
-| Symptom                                                                | Cause                                                                     | Fix                                                                                                                                                           |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DocstringParsingError: Documentation tag ... not valid for contracts` | solc parses a package name beginning with `@` inside NatSpec as a doc tag | Never write `@scope/package` in a NatSpec comment                                                                                                             |
-| `assertions.revert` failed on `InvalidAdmin()`                         | `revert` asserts a _non_-custom error by design                           | Use `revertWithCustomError`, passing an already-deployed instance purely as the ABI                                                                           |
-| `hre.network.connect() is deprecated`                                  | HH3 API moved                                                             | `await network.getOrCreate()` in test files                                                                                                                   |
-| Long `cat > file <<'EOF'` heredocs failed with `unexpected EOF`        | The shell bridge truncates long commands                                  | Write files over roughly 150 lines with the editor tool, not shell heredocs                                                                                   |
-| solhint `gas-indexed-events`, `gas-strict-inequalities` warnings       | Micro-gas rules that hurt readability                                     | Turned off in `.solhint.json`. Indexing a `uint32` nobody filters by costs gas on every write; `answer <= 0` is clearer than `answer < 1` for a signed value. |
+| Symptom                                                                   | Cause                                                                                    | Fix                                                                                  |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `CompilerError: Stack too deep` in `revealCall`                           | Six parameters stay live to the end of the frame; the optimizer is off in `default`      | Group the plaintext into a `calldata` struct — one stack slot instead of five        |
+| Fuzz test reverted with `NotAnalyst`, caller was the test contract        | `registry.minStake()` **inside** `commitCall{value: ...}` spends the one-shot `vm.prank` | Read `minStake()` into a local before the prank                                      |
+| `vm.expectPartialRevert` also spends a pending `vm.prank`                 | Same one-shot semantics                                                                  | `vm.startPrank` / `vm.stopPrank` around the pair                                     |
+| Access-control test failed with an unhandled rejection before any `await` | Building an array of promises fires every transaction eagerly                            | Store thunks, call them inside the loop                                              |
+| solhint `ordering` errors                                                 | HH3/solhint want external → public → private                                             | `computeCommitment` after the external views; `_requireOpenAndOwned` after `_settle` |
+| solhint `use-natspec` on admin events and constants                       | Every declaration needs `@notice`, events need `@param` per field                        | Written out; they are the audit trail for admin actions anyway                       |
 
-### Environment facts worth not rediscovering
+### Answers to the three control questions owed from F0
 
-- Repo path contains a space (`04_PROYECTOS/Proof of Call`). Nothing has broken
-  so far, but it is the first suspect for any strange path error.
+All three are written up in [[threat-model]]:
+
+1. **Removing `analyst` from the preimage** — a step-by-step reputation theft:
+   Mallory copies Alice's commitment hash into her own call, waits for Alice's
+   reveal to hit the mempool, lifts the four plaintext fields and opens _her_
+   call with them at a higher priority fee. She ends up with an identical,
+   identically-timestamped winning call she never made. The stake is untouched,
+   which is why the attack is easy to miss when auditing for fund loss.
+2. **`abi.encode` over `abi.encodePacked`** — the tuple is all fixed-size today,
+   so both are safe _today_. The ambiguity is a property of the type list, not of
+   the call: adding one variable-length field later turns a safe encoding into a
+   collidable one with no compile error and no failing test. ~100 gas against a
+   ~45,000-gas commit.
+3. **Reverting on a stale feed** — a flag has to be checked, and the failure mode
+   of an unchecked flag is silence. If a feed dies permanently while a call is
+   open, **the analyst loses the stake and it is not fair**: an oracle outage is
+   written into their public record as evasion. Bounded by `maxHorizon` and a
+   swappable resolver; the real fix is a `Voided` state, which needs a governance
+   answer the MVP does not have. Shipped as limitation 7.
+
+---
+
+## Environment facts worth not rediscovering
+
+- Repo path contains a space (`04_PROYECTOS/Proof of Call`). Nothing has broken,
+  but it is the first suspect for any strange path error.
 - Git identity is **repo-local**, not global: `Ciro Urrustarazu`,
-  `67176499+cirola@users.noreply.github.com` (GitHub noreply, so the real address
-  never lands in a public history).
-- Commits carry a `Co-Authored-By: Claude Opus 5` trailer. Open question for a
-  portfolio repo — trivial to strip **before** a remote exists, painful after.
-- Coverage counts `contracts/mocks/`, which sits around 57% because parts of the
-  mock are not exercised yet. F3 uses more of it. If the F3 global target of 90%
-  is missed only because of the mock, exclude mocks from coverage rather than
-  writing tests for a test double.
-- No remote is configured. Nothing has been pushed anywhere.
+  `67176499+cirola@users.noreply.github.com`.
+- Commits carry a `Co-Authored-By: Claude Opus 5` trailer. Still trivial to strip
+  while no remote exists, painful after.
+- **No remote is configured.** Nothing has been pushed anywhere. CI is written
+  and will run on the first push to GitHub, but has never executed.
+- `forge-std` is installed from **GitHub** (`foundry-rs/forge-std#v1.9.7`), not
+  from the `forge-std` npm package — that one is an unofficial third-party
+  mirror pinned at 1.1.2. `npm ci` therefore needs git, which the CI runner has.
+- Files over roughly 150 lines have to be written with the editor tool; long
+  `cat <<'EOF'` heredocs get truncated by the shell bridge.
+- Never write `@scope/package` inside a NatSpec comment — solc parses the `@` as
+  a doc tag and fails with `DocstringParsingError`.
 
 ---
 
 ## Next session — start here
 
-### F2 — `commitCall`
+### F5 — the frontend
 
-Design already settled, so this is implementation rather than decision-making.
+Stack is fixed: React + Vite + wagmi 2.19.5 + RainbowKit 2
+([[ADR-001-pin-wagmi-v2]]). Nothing about it has been scaffolded yet.
 
-```solidity
-enum Status {
-  None,
-  Committed,
-  RevealedWin,
-  RevealedLoss,
-  Forfeited
-}
-enum Direction {
-  Above,
-  Below
-}
+Four screens, in dependency order:
 
-struct Call {
-  address analyst; // slot 0, packed with the two below
-  uint64 deadline;
-  Status status;
-  bytes32 commitment; // slot 1
-  uint256 stake; // slot 2
-}
+1. **Commit.** Asset picker (only configured assets — the contract cannot check,
+   so this is the only thing standing between a user and an unrevealable call),
+   direction, target price at 8 decimals, deadline picker bounded by
+   `minHorizon`/`maxHorizon`, stake input floored at `minStake`.
 
-struct AnalystStats {
-  uint32 committed;
-  uint32 wins;
-  uint32 losses;
-  uint32 forfeited;
-}
-```
+   The salt is generated with **`crypto.getRandomValues`, never `Math.random`**,
+   and the commitment is computed by calling `computeCommitment` on the contract
+   rather than by re-implementing `abi.encode` in TypeScript. There is already a
+   test asserting the two agree — keep it that way; a divergence produces a lost
+   stake and no error message.
 
-`commitCall(bytes32 commitment, uint64 deadline) external payable whenNotPaused`
+2. **Salt custody.** The hard part of the UX, not an afterthought. Store locally,
+   offer a download, and say in plain language that losing it forfeits the stake.
+   Nothing recovers it.
 
-Reverts when: `msg.value < minStake`; `deadline` outside
-`[block.timestamp + minHorizon, block.timestamp + maxHorizon]`; the commitment
-was already used. Custom errors only, no `require` strings.
+3. **Reveal.** Needs the settlement round id, which means a **binary search over
+   `getRoundData`** on the feed to find the last round at or before the deadline.
+   Monotonic `updatedAt` makes it straightforward; the phase-boundary caveat in
+   ADR-010 is the edge case. Getting this wrong shows up as
+   `LaterRoundAvailable` or `RoundAfterTimestamp`, both of which are recoverable
+   by retrying with the right id — worth surfacing as a readable message rather
+   than a raw revert.
 
-Decisions to carry in from F0:
+4. **Leaderboard.** Built from event logs, not from chain state. Raw
+   win/loss/forfeit counts come from `getStats`; the _ranking_ weights each call
+   by the distance between its target and the spot price at commit time, which
+   the chain cannot know ([[ADR-004-trivial-target-measured-off-chain]]).
+   `CallCommitted` carries `committedAt` precisely so this is computable. Label
+   the ranking as a claim by the frontend and the counts as chain data.
 
-- **Snapshot the reveal window per call at commit time** — store the deadline
-  plus the window rather than reading `revealWindow` live at reveal, so an admin
-  shortening it cannot retroactively force forfeits on open calls
-  ([[ADR-009-initial-protocol-parameters]]).
-- **Commitment uniqueness needs its own mapping** (`bytes32 => bool`), which is
-  a second cold `SSTORE` per commit. Worth stating explicitly in the commit
-  message: it buys invariant 1.
-- `CallCommitted` must carry `block.timestamp`, because `committedAt` is not in
-  storage ([[ADR-006-drop-committedat-from-struct]]) and the frontend countdown
-  plus the off-chain edge metric both need it.
-- Index `analyst` and `callId` on the events; the leaderboard filters by analyst.
+### Then: the actual Sepolia deployment
 
-Acceptance: invariants 1 and 6 tested. **Invariant 6 is `>=`, not `==`** —
-`selfdestruct` and block rewards can force ETH into the contract without touching
-`receive()`, so `balance == sum(stakes)` is falsifiable while
-`balance >= sum(stakes)` is the real property.
+`npm run deploy:sepolia` is wired and the module is tested locally, but it has
+never been pointed at a real network. It needs:
 
-### F3 — reveal, forfeit, settlement
+- A dedicated, disposable wallet funded from a faucet.
+- The three keystore secrets set (`SEPOLIA_RPC_URL`, `SEPOLIA_PRIVATE_KEY`,
+  `ETHERSCAN_API_KEY`).
+- A check that the two Chainlink proxy addresses in the module are still the
+  current Sepolia ones before spending gas.
 
-`revealCall(uint256 callId, bytes32 assetId, Direction dir, int256 targetPrice, bytes32 salt)`
-and `forfeit(uint256 callId)`.
+Afterwards: paste the deployed addresses and the Etherscan links into the README
+status block, and record the feed addresses actually used so a future
+deprecation can be traced.
 
-- Strict checks-effects-interactions: write `status` **before** transferring ETH.
-- ETH out with `call{value:}` and a checked return `bool`, never `transfer()`.
-- `Above` wins on `price >= targetPrice`, `Below` on `price <= targetPrice`.
-  Equality is a win for both — deliberate, documented in
-  [[ADR-007-above-below-not-long-short]].
-- `forfeit` is public on purpose: a third party can settle an abandoned call, so
-  the record never depends on the loser showing up to log their own loss.
-- Open question to answer with reasoning, not reflex: is `ReentrancyGuard`
-  actually needed given strict CEI, or is it defence in depth? Write the answer
-  into the commit message either way.
-- At least one Solidity fuzz test in `test/solidity/` over commitment
-  verification.
+### Smaller things, if time allows
 
-Acceptance: all 8 invariants from the brief's section 4.2, global coverage 90% or
-better.
-
-### Owed from F0 — three control questions, still unanswered
-
-Per the working agreement these gate the next phase. They are the ones an
-interviewer will ask about this project.
-
-1. Remove `analyst` from the commitment preimage. Describe the concrete theft,
-   step by step: who watches what, when, and what they submit. (The reveal sits
-   in the mempool before it is mined.)
-2. Why `abi.encode` and not the cheaper `abi.encodePacked` here?
-3. Why does the resolver revert on a stale feed instead of returning the last
-   known price with a warning flag — and if a feed dies permanently while a call
-   is open, who loses the stake, and is that fair?
+- **Gas snapshot.** `hardhat test --gas-stats` exists; a committed baseline would
+  make the storage-layout arguments in the ADRs checkable rather than asserted.
+- **Exclude `contracts/mocks/` from coverage** so the number reported is about
+  the protocol. Currently the mocks are the only thing below 100%.
+- **Strip the `Co-Authored-By` trailers** if this is going public — decide before
+  a remote exists.

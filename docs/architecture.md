@@ -1,7 +1,7 @@
 ---
 title: Architecture
 status: living
-phase: F0
+phase: F3
 tags: [architecture, contracts, oracle]
 ---
 
@@ -76,6 +76,21 @@ Revealing before the deadline always reverts — invariant 2. If that check fail
 the analyst could wait for the price to move and reveal only when it favours
 them, and the whole scheme is decorative.
 
+Two arrows point at the deadline, and they are not the same arrow. **The reveal
+happens anywhere in the 48-hour window; the price is read at the deadline
+itself.** Settlement calls `getPriceAt(assetId, deadline, roundId)` and not
+`getPrice(assetId)`, so moving the reveal later inside the window changes
+nothing about the outcome — which is the only reason a window that wide is safe
+([[ADR-010-settlement-reads-the-round-covering-the-deadline]]).
+
+The round id is supplied by the caller because Chainlink exposes no
+timestamp-to-round index. It is a lookup key, not a claim: the resolver requires
+the round to exist, to predate the deadline, to sit inside that feed's staleness
+window relative to the deadline, and to have **no successor that also predates
+it**. Exactly one round satisfies all four for a given deadline, so there is
+nothing to cherry-pick. The frontend finds it by binary search over
+`getRoundData` before building the transaction.
+
 ## Commitment construction
 
 ```
@@ -129,6 +144,31 @@ a fourth slot would cost every analyst 20,000 gas to serve readers who are
 reading event logs anyway ([[ADR-006-drop-committedat-from-struct]]). The same
 argument is why the sum of open stakes is not tracked in storage either — it is
 derivable from the calls themselves, and invariant 6 is asserted by summing them.
+
+## Reveal payload
+
+```solidity
+struct RevealParams {
+  bytes32 assetId; // keccak256("BTC/USD")
+  Direction direction; // Above | Below
+  int256 targetPrice; // 8 decimals
+  bytes32 salt; // the 256 bits from the commit
+  uint80 roundId; // settlement round, found off-chain
+}
+
+function revealCall(uint256 callId, RevealParams calldata params) external;
+```
+
+Four of the six preimage fields, plus the round id. `deadline` and `analyst` are
+**not** parameters — they are read from storage, where they were fixed at commit
+time, so there is no way for the caller's copy to disagree with what was
+committed. `roundId` is not in the preimage at all: it is not a prediction, and
+it is not knowable when the commitment is made.
+
+Grouping them in one `calldata` struct is also what keeps `revealCall` inside
+the EVM's sixteen stack slots. The default build profile leaves the optimizer
+off so coverage line maps and stack traces stay accurate, which means stack
+depth is a real constraint rather than something `viaIR` hides.
 
 ## Trust boundaries
 
