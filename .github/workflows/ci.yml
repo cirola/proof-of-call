@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A second push to the same branch cancels the first: the only run whose result
+# matters is the one for the current head.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: build, lint, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `npm ci` and not `npm install`: it installs from the lockfile exactly and
+      # fails if package.json and the lockfile disagree, which is the difference
+      # between CI verifying the dependency set and CI quietly changing it.
+      # forge-std is a git dependency, so the runner's git is doing real work here.
+      - run: npm ci
+
+      - name: Compile
+        run: npm run build
+
+      - name: Lint contracts
+        run: npm run lint
+
+      - name: Check formatting
+        run: npm run format:check
+
+      # Split from the Solidity tests so a failure names which runner broke.
+      - name: TypeScript tests
+        run: npm run test:nodejs
+
+      - name: Solidity fuzz tests
+        run: npm run test:solidity
+
+      - name: Coverage
+        run: npm run coverage

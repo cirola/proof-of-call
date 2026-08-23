@@ -11,10 +11,13 @@
   "scripts": {
     "build": "hardhat build",
     "test": "hardhat test",
+    "test:nodejs": "hardhat test nodejs",
+    "test:solidity": "hardhat test solidity",
     "coverage": "hardhat test --coverage",
     "lint": "solhint \"contracts/**/*.sol\"",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "deploy:sepolia": "hardhat ignition deploy ignition/modules/ProofOfCall.ts --network sepolia --verify"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox-viem": "^5.0.7",
