@@ -421,4 +421,200 @@ describe("PriceOracleResolver", () => {
       );
     });
   });
+
+  /**
+   * A three-round price history, entirely in the past, with a two-hour gap
+   * between rounds and a two-hour staleness threshold.
+   *
+   *      base        +2h        +4h        +6h                 +12h
+   *        |          |          |          |                    |
+   *      round 1    round 2    round 3    round 4               now
+   *      $3,000     $3,100     $3,200     $3,300
+   *
+   * Every `getPriceAt` case below is a deadline placed somewhere on this line.
+   * Time is advanced past the last round first, because asking about a
+   * timestamp in the future is rejected outright.
+   */
+  describe("getPriceAt - settlement at a past deadline", () => {
+    const STALE_AFTER = 2 * ONE_HOUR;
+
+    async function historyFixture() {
+      const { resolver, feed8, feed18, admin, outsider } = await deployFixture();
+
+      await resolver.write.setFeed([BTC_USD, feed8.address, STALE_AFTER]);
+      const base = await networkHelpers.time.latest();
+
+      await feed8.write.pushRoundAt([price(3100n, 8), BigInt(base + 2 * ONE_HOUR)]);
+      await feed8.write.pushRoundAt([price(3200n, 8), BigInt(base + 4 * ONE_HOUR)]);
+      await feed8.write.pushRoundAt([price(3300n, 8), BigInt(base + 6 * ONE_HOUR)]);
+
+      await networkHelpers.time.increaseTo(base + 12 * ONE_HOUR);
+
+      return { resolver, feed8, feed18, admin, outsider, base };
+    }
+
+    const ROUND_2 = 2n;
+    const ROUND_3 = 3n;
+    const ROUND_4 = 4n;
+
+    it("returns the answer of the last round at or before the deadline", async () => {
+      const { resolver, base } = await networkHelpers.loadFixture(historyFixture);
+
+      const deadline = BigInt(base + 5 * ONE_HOUR);
+
+      assert.equal(await resolver.read.getPriceAt([BTC_USD, deadline, ROUND_3]), price(3200n, 8));
+    });
+
+    it("accepts a deadline that lands exactly on a round", async () => {
+      const { resolver, base } = await networkHelpers.loadFixture(historyFixture);
+
+      const deadline = BigInt(base + 4 * ONE_HOUR);
+
+      // Age zero. The round published *at* the deadline is the price at the
+      // deadline, so `updatedAt <= atTimestamp` has to be inclusive.
+      assert.equal(await resolver.read.getPriceAt([BTC_USD, deadline, ROUND_3]), price(3200n, 8));
+    });
+
+    it("refuses an older round when a later one also covers the deadline", async () => {
+      const { resolver, base } = await networkHelpers.loadFixture(historyFixture);
+
+      const deadline = BigInt(base + 4 * ONE_HOUR);
+
+      // This is the check the whole function exists for. Round 2 is genuinely
+      // before the deadline and genuinely inside the staleness window, so every
+      // other validation passes - and it says $3,100 instead of $3,200. Without
+      // the successor check the revealer scans backwards and settles against
+      // whichever historical price suits them.
+      await viem.assertions.revertWithCustomError(
+        resolver.read.getPriceAt([BTC_USD, deadline, ROUND_2]),
+        resolver,
+        "LaterRoundAvailable",
+      );
+    });
+
+    it("refuses a round published after the deadline", async () => {
+      const { resolver, base } = await networkHelpers.loadFixture(historyFixture);
+
+      const deadline = BigInt(base + 5 * ONE_HOUR);
+
+      // Round 4 is at +6h. Accepting it would settle a Friday call against
+      // Sunday's price, which is the attack in ADR-010 with extra steps.
+      await viem.assertions.revertWithCustomError(
+        resolver.read.getPriceAt([BTC_USD, deadline, ROUND_4]),
+        resolver,
+        "RoundAfterTimestamp",
+      );
+    });
+
+    it("accepts a round exactly at the staleness threshold before the deadline", async () => {
+      const { resolver, base } = await networkHelpers.loadFixture(historyFixture);
+
+      // Round 4 is at +6h, the deadline at +8h, the threshold 2h. The check is
+      // `age > staleAfter`, so this is the last accepted second.
+      const deadline = BigInt(base + 8 * ONE_HOUR);
+
+      assert.equal(await resolver.read.getPriceAt([BTC_USD, deadline, ROUND_4]), price(3300n, 8));
+    });
+
+    it("refuses a round one second past the staleness threshold", async () => {
+      const { resolver, base } = await networkHelpers.loadFixture(historyFixture);
+
+      const deadline = BigInt(base + 8 * ONE_HOUR + 1);
+
+      // The feed stopped publishing before the deadline. There is no round that
+      // describes the price at that moment, and inventing one from two hours of
+      // silence is exactly what failing closed is meant to prevent.
+      await viem.assertions.revertWithCustomError(
+        resolver.read.getPriceAt([BTC_USD, deadline, ROUND_4]),
+        resolver,
+        "StaleRoundForTimestamp",
+      );
+    });
+
+    it("refuses a round that does not exist", async () => {
+      const { resolver, base } = await networkHelpers.loadFixture(historyFixture);
+
+      await viem.assertions.revertWithCustomError(
+        resolver.read.getPriceAt([BTC_USD, BigInt(base + 5 * ONE_HOUR), 99n]),
+        resolver,
+        "RoundNotComplete",
+      );
+    });
+
+    it("refuses a round that does not exist on an aggregator that reverts", async () => {
+      const { resolver, feed8, base } = await networkHelpers.loadFixture(historyFixture);
+
+      // Current Chainlink aggregators revert with "No data present" instead of
+      // returning a zeroed tuple. Both shapes have to reach the same named
+      // error, otherwise the try/catch is decorative.
+      await feed8.write.setRevertOnMissingRound([true]);
+
+      await viem.assertions.revertWithCustomError(
+        resolver.read.getPriceAt([BTC_USD, BigInt(base + 5 * ONE_HOUR), 99n]),
+        resolver,
+        "RoundNotComplete",
+      );
+    });
+
+    it("still settles on the latest round when the successor lookup reverts", async () => {
+      const { resolver, feed8, base } = await networkHelpers.loadFixture(historyFixture);
+
+      await feed8.write.setRevertOnMissingRound([true]);
+
+      // Round 4 has no successor, so the "is a later round available" probe hits
+      // the revert. Absence of a successor is proof the round is the latest one,
+      // not a failure - the settlement must go through.
+      assert.equal(
+        await resolver.read.getPriceAt([BTC_USD, BigInt(base + 7 * ONE_HOUR), ROUND_4]),
+        price(3300n, 8),
+      );
+    });
+
+    it("refuses a deadline in the future", async () => {
+      const { resolver } = await networkHelpers.loadFixture(historyFixture);
+
+      const now = await networkHelpers.time.latest();
+
+      await viem.assertions.revertWithCustomError(
+        resolver.read.getPriceAt([BTC_USD, BigInt(now + ONE_HOUR), ROUND_4]),
+        resolver,
+        "FutureTimestamp",
+      );
+    });
+
+    it("refuses an unconfigured asset", async () => {
+      const { resolver, base } = await networkHelpers.loadFixture(historyFixture);
+
+      await viem.assertions.revertWithCustomError(
+        resolver.read.getPriceAt([ETH_USD, BigInt(base + 5 * ONE_HOUR), ROUND_3]),
+        resolver,
+        "FeedNotConfigured",
+      );
+    });
+
+    it("refuses a non-positive answer in an otherwise valid round", async () => {
+      const { resolver, feed8, base } = await networkHelpers.loadFixture(historyFixture);
+
+      const at = BigInt(base + 4 * ONE_HOUR);
+      await feed8.write.setRoundData([Number(ROUND_3), -1n, at, at, Number(ROUND_3)]);
+
+      await viem.assertions.revertWithCustomError(
+        resolver.read.getPriceAt([BTC_USD, at, ROUND_3]),
+        resolver,
+        "NonPositivePrice",
+      );
+    });
+
+    it("normalizes a historical answer the same way as a live one", async () => {
+      const { resolver, feed18 } = await networkHelpers.loadFixture(historyFixture);
+
+      await resolver.write.setFeed([ETH_USD, feed18.address, STALE_AFTER]);
+
+      const at = await networkHelpers.time.latest();
+      await feed18.write.pushRoundAt([price(4000n, 18), BigInt(at)]);
+
+      // Round 2 on the 18-decimal feed: the constructor wrote round 1.
+      assert.equal(await resolver.read.getPriceAt([ETH_USD, BigInt(at), ROUND_2]), price(4000n, 8));
+    });
+  });
 });

@@ -37,6 +37,32 @@ interface IPriceResolver {
     /// @return price Price scaled to 8 decimals. Always `> 0` on success.
     function getPrice(bytes32 assetId) external view returns (int256 price);
 
+    /// @notice Price of `assetId` as of `atTimestamp`, normalized to 8 decimals.
+    /// @dev This is the settlement primitive, and `getPrice` is not. A contract
+    ///      that settles a dated prediction against the *latest* price settles it
+    ///      against whatever moment the revealer chose to send their transaction,
+    ///      which hands them a free option over the entire reveal window. The
+    ///      full attack is written out in ADR-010.
+    ///
+    ///      There is no on-chain index from a timestamp to a Chainlink round, so
+    ///      `roundId` is supplied by the caller and found off-chain by binary
+    ///      search. Implementations MUST NOT trust it: a conforming
+    ///      implementation reverts unless the round is the *last* one at or
+    ///      before `atTimestamp`, which makes exactly one round acceptable for a
+    ///      given timestamp and leaves the caller nothing to cherry-pick.
+    ///
+    ///      MUST revert if the asset is unsupported, if the round does not exist
+    ///      or was never answered, if it postdates `atTimestamp`, if a later
+    ///      round also qualifies, if the round is older than the feed's
+    ///      staleness threshold relative to `atTimestamp`, or if the price is
+    ///      non-positive.
+    /// @param assetId Feed identifier, e.g. `keccak256("BTC/USD")`.
+    /// @param atTimestamp Unix seconds the price is being asked about. Must not
+    ///        be in the future.
+    /// @param roundId Candidate round, verified rather than trusted.
+    /// @return price Price scaled to 8 decimals. Always `> 0` on success.
+    function getPriceAt(bytes32 assetId, uint256 atTimestamp, uint80 roundId) external view returns (int256 price);
+
     /// @notice Whether a feed is registered for `assetId`.
     /// @dev A `true` result means a feed address is configured — NOT that
     ///      `getPrice` will succeed right now. A registered feed can still be

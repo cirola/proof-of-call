@@ -73,6 +73,15 @@ contract PriceOracleResolver is IPriceResolver, AccessControl {
     error FutureTimestamp(bytes32 assetId, uint256 updatedAt, uint256 blockTimestamp);
     error StalePrice(bytes32 assetId, uint256 updatedAt, uint256 staleAfter, uint256 blockTimestamp);
     error NonPositivePrice(bytes32 assetId, int256 answer);
+    error RoundAfterTimestamp(bytes32 assetId, uint80 roundId, uint256 updatedAt, uint256 atTimestamp);
+    error StaleRoundForTimestamp(
+        bytes32 assetId,
+        uint80 roundId,
+        uint256 updatedAt,
+        uint256 staleAfter,
+        uint256 atTimestamp
+    );
+    error LaterRoundAvailable(bytes32 assetId, uint80 roundId, uint256 nextUpdatedAt, uint256 atTimestamp);
 
     /// @notice Deploy the resolver with an initial administrator.
     /// @param admin Account receiving `DEFAULT_ADMIN_ROLE`.
@@ -172,6 +181,52 @@ contract PriceOracleResolver is IPriceResolver, AccessControl {
     }
 
     /// @inheritdoc IPriceResolver
+    /// @dev The four validations below are not interchangeable, and the last one
+    ///      is the reason this function exists at all.
+    ///
+    ///      Accepting any round at or before `atTimestamp` would let a revealer
+    ///      scan backwards and settle against whichever historical price suits
+    ///      them. Requiring that round `roundId + 1` either does not exist or
+    ///      postdates `atTimestamp` pins the answer: for a given timestamp
+    ///      exactly one round satisfies both bounds, so the caller supplies a
+    ///      lookup key and gets no discretion with it.
+    ///
+    ///      `roundId + 1` cannot cross a Chainlink phase boundary — a round id is
+    ///      `(phaseId << 64) | aggregatorRoundId`, so the successor of the last
+    ///      round of a phase is not the first round of the next one. The
+    ///      staleness bound caps the resulting gap at one heartbeat on the single
+    ///      call whose deadline lands inside an aggregator rotation. Written up
+    ///      in ADR-010 rather than papered over.
+    function getPriceAt(bytes32 assetId, uint256 atTimestamp, uint80 roundId) external view returns (int256) {
+        FeedConfig memory config = _feeds[assetId];
+        if (address(config.aggregator) == address(0)) revert FeedNotConfigured(assetId);
+
+        // Asking about the future is a caller bug, and answering it would let a
+        // deadline that has not arrived yet settle against the present price.
+        if (atTimestamp > block.timestamp) revert FutureTimestamp(assetId, atTimestamp, block.timestamp);
+
+        (int256 answer, uint256 updatedAt) = _readRound(config.aggregator, roundId);
+
+        if (updatedAt == 0) revert RoundNotComplete(assetId, roundId);
+        if (updatedAt > atTimestamp) revert RoundAfterTimestamp(assetId, roundId, updatedAt, atTimestamp);
+
+        if (atTimestamp - updatedAt > config.staleAfter) {
+            revert StaleRoundForTimestamp(assetId, roundId, updatedAt, config.staleAfter, atTimestamp);
+        }
+
+        if (answer <= 0) revert NonPositivePrice(assetId, answer);
+
+        if (roundId != type(uint80).max) {
+            (, uint256 nextUpdatedAt) = _readRound(config.aggregator, roundId + 1);
+            if (nextUpdatedAt != 0 && nextUpdatedAt <= atTimestamp) {
+                revert LaterRoundAvailable(assetId, roundId, nextUpdatedAt, atTimestamp);
+            }
+        }
+
+        return _normalize(answer, config.aggregator.decimals());
+    }
+
+    /// @inheritdoc IPriceResolver
     function isSupported(bytes32 assetId) external view returns (bool supported) {
         return address(_feeds[assetId].aggregator) != address(0);
     }
@@ -191,6 +246,27 @@ contract PriceOracleResolver is IPriceResolver, AccessControl {
     // --------------------------------------------------------------------
     // Internal
     // --------------------------------------------------------------------
+
+    /// @dev Read one historical round, reporting absence as `updatedAt == 0`
+    ///      rather than as a revert.
+    ///
+    ///      Aggregators disagree about how a missing round fails: the current
+    ///      implementations revert with `"No data present"`, older ones return a
+    ///      zeroed tuple. `getPriceAt` has to distinguish "no such round" from
+    ///      "bad round" in two different places — once to reject the round the
+    ///      caller supplied, once to accept the *absence* of a successor as proof
+    ///      the round is the latest — so both shapes are collapsed here into the
+    ///      single sentinel the caller can branch on.
+    function _readRound(
+        AggregatorV3Interface aggregator,
+        uint80 roundId
+    ) private view returns (int256 answer, uint256 updatedAt) {
+        try aggregator.getRoundData(roundId) returns (uint80, int256 a, uint256, uint256 u, uint80) {
+            return (a, u);
+        } catch {
+            return (0, 0);
+        }
+    }
 
     /// @dev Rescale `answer` from `feedDecimals` to `PRICE_DECIMALS`.
     ///

@@ -31,7 +31,16 @@ contract MockV3Aggregator is AggregatorV3Interface {
     /// @notice Id of the most recent round, returned by `latestRoundData`.
     uint80 public latestRound;
 
+    /// @notice When true, `getRoundData` reverts for a round that was never written.
+    /// @dev Real aggregators disagree here — current ones revert with
+    ///      `"No data present"`, older ones return a zeroed tuple — and the
+    ///      resolver has to treat both as "no such round". Defaults to the
+    ///      zeroed-tuple behaviour; flip it to prove the try/catch path works.
+    bool public revertOnMissingRound;
+
     mapping(uint80 roundId => Round) private _rounds;
+
+    error NoDataPresent(uint80 roundId);
 
     constructor(uint8 decimals_, int256 initialAnswer) {
         DECIMALS = decimals_;
@@ -69,6 +78,20 @@ contract MockV3Aggregator is AggregatorV3Interface {
         }
     }
 
+    /// @notice Append a round with `answer`, stamped at an arbitrary `updatedAt`.
+    /// @dev Builds the round *history* the deadline settlement path walks, which
+    ///      `updateAnswer` cannot do: it stamps `block.timestamp`, so every round
+    ///      it writes lands after the deadline of any call already committed.
+    /// @return roundId Id of the round just appended.
+    function pushRoundAt(int256 answer, uint256 updatedAt) external returns (uint80 roundId) {
+        return _push(answer, updatedAt);
+    }
+
+    /// @notice Toggle whether an unwritten round reverts or returns zeros.
+    function setRevertOnMissingRound(bool value) external {
+        revertOnMissingRound = value;
+    }
+
     /// @notice Move the latest round's `updatedAt` without touching its answer.
     /// @dev This is how a feed that stopped publishing is simulated: the price
     ///      is still there and still looks valid, it is simply old. A consumer
@@ -101,6 +124,7 @@ contract MockV3Aggregator is AggregatorV3Interface {
         returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)
     {
         Round memory r = _rounds[roundId_];
+        if (r.updatedAt == 0 && revertOnMissingRound) revert NoDataPresent(roundId_);
         return (roundId_, r.answer, r.startedAt, r.updatedAt, r.answeredInRound);
     }
 
@@ -118,9 +142,10 @@ contract MockV3Aggregator is AggregatorV3Interface {
     // Internal
     // --------------------------------------------------------------------
 
-    function _push(int256 answer, uint256 timestamp) private {
+    function _push(int256 answer, uint256 timestamp) private returns (uint80 roundId) {
         uint80 next = latestRound + 1;
         latestRound = next;
         _rounds[next] = Round({answer: answer, startedAt: timestamp, updatedAt: timestamp, answeredInRound: next});
+        return next;
     }
 }
