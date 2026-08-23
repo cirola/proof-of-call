@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 
 import {IPriceResolver} from "./interfaces/IPriceResolver.sol";
 
@@ -17,7 +18,7 @@ import {IPriceResolver} from "./interfaces/IPriceResolver.sol";
 ///      The registry never learns what an oracle is. It holds an
 ///      `IPriceResolver` and asks it for the price at a timestamp; everything
 ///      Chainlink-specific lives behind that seam.
-contract CallRegistry is AccessControl, Pausable {
+contract CallRegistry is AccessControl, Pausable, ReentrancyGuardTransient {
     /// @notice Lifecycle position of a call.
     /// @dev `None` is the zero value and therefore means "no such call", which is
     ///      what makes an unwritten mapping slot distinguishable from a real one
@@ -66,6 +67,33 @@ contract CallRegistry is AccessControl, Pausable {
         uint256 stake;
     }
 
+    /// @param assetId Feed identifier the call was made against.
+    /// @param direction Side of the target that was claimed.
+    /// @param targetPrice Target, at 8 decimals.
+    /// @param salt Salt used at commit time.
+    /// @param roundId Chainlink round covering the deadline, found off-chain.
+    /// @dev The plaintext of a call, passed to `revealCall` as one `calldata`
+    ///      struct rather than as five arguments.
+    ///
+    ///      The first four fields are the preimage minus the parts the contract
+    ///      already knows — `deadline` and `analyst` come from storage, so they
+    ///      cannot be made to disagree with what was committed. `roundId` is not
+    ///      part of the preimage at all: it is a lookup key for the settlement
+    ///      round, it is not knowable at commit time, and the resolver verifies
+    ///      it rather than trusting it (ADR-010).
+    ///
+    ///      Grouping them is also what keeps `revealCall` inside the EVM's
+    ///      sixteen-slot stack limit without turning on the optimizer, which the
+    ///      default build profile leaves off so coverage and stack traces stay
+    ///      accurate.
+    struct RevealParams {
+        bytes32 assetId;
+        Direction direction;
+        int256 targetPrice;
+        bytes32 salt;
+        uint80 roundId;
+    }
+
     /// @notice Public record of an analyst, including the parts they would omit.
     /// @dev Four `uint32` counters, one slot. `uint32` overflows at 4.3 billion
     ///      calls from a single address; arithmetic stays checked, so the
@@ -84,10 +112,16 @@ contract CallRegistry is AccessControl, Pausable {
     ///      configuration change is not and does not.
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
-    /// @notice Starting parameters, fixed in ADR-009. All are admin-settable.
+    /// @notice Starting minimum stake, fixed in ADR-009. Admin-settable afterwards.
     uint256 public constant INITIAL_MIN_STAKE = 0.001 ether;
+
+    /// @notice Starting minimum horizon, fixed in ADR-009. Admin-settable afterwards.
     uint64 public constant INITIAL_MIN_HORIZON = 1 hours;
+
+    /// @notice Starting maximum horizon, fixed in ADR-009. Admin-settable afterwards.
     uint64 public constant INITIAL_MAX_HORIZON = 30 days;
+
+    /// @notice Starting reveal window, fixed in ADR-009. Admin-settable afterwards.
     uint24 public constant INITIAL_REVEAL_WINDOW = 48 hours;
 
     /// @notice Oracle adapter used to settle reveals.
@@ -149,10 +183,63 @@ contract CallRegistry is AccessControl, Pausable {
         uint256 committedAt
     );
 
+    /// @notice Emitted when a call is opened and settled.
+    /// @dev Carries the settlement price as well as the outcome, so the record
+    ///      can be audited without re-deriving which round the contract read.
+    /// @param callId Call that was revealed.
+    /// @param analyst Account that made it.
+    /// @param assetId Feed the call was made against.
+    /// @param direction Side of the target that was claimed.
+    /// @param targetPrice Target, at 8 decimals.
+    /// @param settlementPrice Price at the deadline, at 8 decimals.
+    /// @param won Whether the prediction was correct.
+    event CallRevealed(
+        uint256 indexed callId,
+        address indexed analyst,
+        bytes32 indexed assetId,
+        Direction direction,
+        int256 targetPrice,
+        int256 settlementPrice,
+        bool won
+    );
+
+    /// @notice Emitted when a call is closed unrevealed and its stake slashed.
+    /// @param callId Call that was forfeited.
+    /// @param analyst Account that let the window close.
+    /// @param caller Whoever settled it, which need not be the analyst.
+    /// @param stake Stake sent to the treasury.
+    event CallForfeited(uint256 indexed callId, address indexed analyst, address indexed caller, uint256 stake);
+
+    /// @notice Emitted for every movement of ETH out of the contract.
+    /// @param callId Call the money belonged to.
+    /// @param recipient Analyst on a win, treasury on a loss or forfeit.
+    /// @param amount Amount transferred, in wei.
+    event StakeSettled(uint256 indexed callId, address indexed recipient, uint256 amount);
+
+    /// @notice Emitted when settlement is pointed at a different oracle adapter.
+    /// @param previousResolver Adapter in use until this transaction.
+    /// @param newResolver Adapter used from now on.
     event ResolverUpdated(address indexed previousResolver, address indexed newResolver);
+
+    /// @notice Emitted when the recipient of slashed stakes changes.
+    /// @param previousTreasury Recipient until this transaction.
+    /// @param newTreasury Recipient from now on.
     event TreasuryUpdated(address indexed previousTreasury, address indexed newTreasury);
+
+    /// @notice Emitted when the minimum stake changes.
+    /// @param previousMinStake Minimum until this transaction, in wei.
+    /// @param newMinStake Minimum from now on, in wei.
     event MinStakeUpdated(uint256 previousMinStake, uint256 newMinStake);
+
+    /// @notice Emitted when the allowed commit-to-deadline distance changes.
+    /// @param minHorizon New lower bound in seconds.
+    /// @param maxHorizon New upper bound in seconds.
     event HorizonsUpdated(uint64 minHorizon, uint64 maxHorizon);
+
+    /// @notice Emitted when the reveal window for future commits changes.
+    /// @dev Open calls are unaffected: they carry their own snapshot.
+    /// @param previousRevealWindow Window until this transaction, in seconds.
+    /// @param newRevealWindow Window applied to commits from now on, in seconds.
     event RevealWindowUpdated(uint24 previousRevealWindow, uint24 newRevealWindow);
 
     error InvalidAdmin();
@@ -167,6 +254,13 @@ contract CallRegistry is AccessControl, Pausable {
     error DeadlineTooSoon(uint64 deadline, uint256 earliest);
     error DeadlineTooLate(uint64 deadline, uint256 latest);
     error CallNotFound(uint256 callId);
+    error CallNotOpen(uint256 callId, Status status);
+    error NotAnalyst(uint256 callId, address caller, address analyst);
+    error TooEarlyToReveal(uint256 callId, uint64 deadline, uint256 blockTimestamp);
+    error RevealWindowClosed(uint256 callId, uint256 revealDeadline, uint256 blockTimestamp);
+    error RevealWindowStillOpen(uint256 callId, uint256 revealDeadline, uint256 blockTimestamp);
+    error CommitmentMismatch(uint256 callId, bytes32 expected, bytes32 recomputed);
+    error StakeTransferFailed(uint256 callId, address recipient, uint256 amount);
 
     /// @notice Deploy the registry.
     /// @param admin Account receiving `DEFAULT_ADMIN_ROLE` and `PAUSER_ROLE`.
@@ -237,9 +331,110 @@ contract CallRegistry is AccessControl, Pausable {
             commitment: commitment,
             stake: stake
         });
-        _stats[msg.sender].committed += 1;
+        ++_stats[msg.sender].committed;
 
         emit CallCommitted(callId, msg.sender, commitment, stake, deadline, window, block.timestamp);
+    }
+
+    // --------------------------------------------------------------------
+    // Reveal and settlement
+    // --------------------------------------------------------------------
+
+    /// @notice Open a committed call and settle it against the oracle.
+    /// @dev The order of the checks is the security model, not housekeeping.
+    ///
+    ///      **Only the analyst may reveal.** The address is inside the preimage,
+    ///      so nobody else can produce a matching hash anyway — but rejecting
+    ///      early names the failure instead of surfacing it as a confusing
+    ///      commitment mismatch.
+    ///
+    ///      **Never before the deadline.** If an early reveal were legal the
+    ///      analyst could watch the price and open only when it already favoured
+    ///      them, and the commitment would be decorative.
+    ///
+    ///      **`deadline` is read from storage, not from calldata.** It was fixed
+    ///      at commit time and is bound by the hash, so taking it from the caller
+    ///      would only create a way for the two to disagree.
+    ///
+    ///      **The price comes from the round covering the deadline**, via
+    ///      `getPriceAt`, not from the latest round. Settling against the latest
+    ///      round would settle against whatever moment the analyst chose to send
+    ///      this transaction, which hands them a free option over the whole
+    ///      reveal window. ADR-010 writes the attack out in full.
+    ///
+    ///      Equality is a win for both directions: `Above` wins on
+    ///      `price >= target`, `Below` on `price <= target`. Deliberate, and
+    ///      documented in ADR-007 — the alternative silently loses calls that
+    ///      landed exactly on their target.
+    ///
+    ///      Checks-effects-interactions is strict: `status` is written before any
+    ///      ETH moves, and no path returns a call to `Committed`, so a re-entrant
+    ///      call reverts with `CallNotOpen`. The transient reentrancy guard is
+    ///      defence in depth on top of that, not the thing holding it up — it
+    ///      costs ~100 gas under EIP-1153 and it protects future edits that might
+    ///      not preserve the ordering.
+    /// @param callId Call to open.
+    /// @param params Plaintext of the call, plus the settlement round id.
+    function revealCall(uint256 callId, RevealParams calldata params) external nonReentrant {
+        Call storage stored = _calls[callId];
+
+        address analyst = _requireOpenAndOwned(callId, stored);
+        uint64 deadline = stored.deadline;
+
+        if (block.timestamp < deadline) revert TooEarlyToReveal(callId, deadline, block.timestamp);
+
+        uint256 revealDeadline = uint256(deadline) + stored.revealWindow;
+        if (block.timestamp > revealDeadline) revert RevealWindowClosed(callId, revealDeadline, block.timestamp);
+
+        bytes32 recomputed = computeCommitment(
+            params.assetId,
+            params.direction,
+            params.targetPrice,
+            deadline,
+            params.salt,
+            analyst
+        );
+        if (recomputed != stored.commitment) revert CommitmentMismatch(callId, stored.commitment, recomputed);
+
+        _settle(callId, stored, analyst, params, resolver.getPriceAt(params.assetId, deadline, params.roundId));
+    }
+
+    /// @notice Close a call whose reveal window has elapsed, slashing the stake.
+    /// @dev Callable by **anyone**, which is the point. Attack A in the README is
+    ///      selective reveal: commit a hundred calls, open the three that came in,
+    ///      walk away from the rest. If only the analyst could record their own
+    ///      forfeit, the unrevealed calls would sit in `Committed` forever and the
+    ///      visible record would still be flawless. A third party — a rival, an
+    ///      indexer, a bot earning nothing but the tidiness — can settle them.
+    ///
+    ///      The stake is not the only penalty. `forfeited` goes up in the
+    ///      analyst's public record, so a hundred-call spray reads as ninety-seven
+    ///      forfeits rather than as three wins.
+    ///
+    ///      No `whenNotPaused`. A pause that could reach this function would let
+    ///      an admin freeze stakes indefinitely.
+    /// @param callId Call to forfeit.
+    function forfeit(uint256 callId) external nonReentrant {
+        Call storage stored = _calls[callId];
+
+        Status status = stored.status;
+        if (status == Status.None) revert CallNotFound(callId);
+        if (status != Status.Committed) revert CallNotOpen(callId, status);
+
+        uint256 revealDeadline = uint256(stored.deadline) + stored.revealWindow;
+        if (block.timestamp <= revealDeadline) {
+            revert RevealWindowStillOpen(callId, revealDeadline, block.timestamp);
+        }
+
+        address analyst = stored.analyst;
+        uint256 stake = stored.stake;
+
+        stored.status = Status.Forfeited;
+        ++_stats[analyst].forfeited;
+
+        emit CallForfeited(callId, analyst, msg.sender, stake);
+
+        _payout(callId, treasury, stake);
     }
 
     // --------------------------------------------------------------------
@@ -324,38 +519,6 @@ contract CallRegistry is AccessControl, Pausable {
     // Views
     // --------------------------------------------------------------------
 
-    /// @notice The commitment for a given prediction.
-    /// @dev `public` and `pure` so the frontend hashes through the contract
-    ///      itself rather than reimplementing the encoding in TypeScript, where a
-    ///      divergence would surface as an unrevealable call and a lost stake.
-    ///
-    ///      `abi.encode`, not `abi.encodePacked`: packed encoding concatenates
-    ///      without length information, so distinct tuples can flatten to the
-    ///      same bytes. The gas saved is not worth introducing ambiguity into the
-    ///      one value the entire protocol rests on.
-    ///
-    ///      `analyst` is in the preimage so a commitment can only be opened by
-    ///      the account that made it. Without it, a watcher who sees a reveal in
-    ///      the mempool could take the plaintext parameters and open a commitment
-    ///      they had copied earlier, claiming someone else's call.
-    /// @param assetId Feed identifier, e.g. `keccak256("BTC/USD")`.
-    /// @param direction Side of the target being claimed.
-    /// @param targetPrice Target, at 8 decimals.
-    /// @param deadline Unix second the prediction is about.
-    /// @param salt 256 bits from a CSPRNG.
-    /// @param analyst Account that will commit.
-    /// @return commitment Hash to pass to `commitCall`.
-    function computeCommitment(
-        bytes32 assetId,
-        Direction direction,
-        int256 targetPrice,
-        uint64 deadline,
-        bytes32 salt,
-        address analyst
-    ) public pure returns (bytes32 commitment) {
-        return keccak256(abi.encode(assetId, direction, targetPrice, deadline, salt, analyst));
-    }
-
     /// @notice Read a call.
     /// @dev Returns a zeroed struct with `status == Status.None` for an id that
     ///      was never used, rather than reverting: callers use this precisely to
@@ -388,5 +551,109 @@ contract CallRegistry is AccessControl, Pausable {
     /// @return used True if the commitment is already taken for that analyst.
     function isCommitmentUsed(address analyst, bytes32 commitment) external view returns (bool used) {
         return _commitmentUsed[analyst][commitment];
+    }
+
+    /// @notice The commitment for a given prediction.
+    /// @dev `public` and `pure` so the frontend hashes through the contract
+    ///      itself rather than reimplementing the encoding in TypeScript, where a
+    ///      divergence would surface as an unrevealable call and a lost stake.
+    ///
+    ///      `abi.encode`, not `abi.encodePacked`: packed encoding concatenates
+    ///      without length information, so distinct tuples can flatten to the
+    ///      same bytes. The gas saved is not worth introducing ambiguity into the
+    ///      one value the entire protocol rests on.
+    ///
+    ///      `analyst` is in the preimage so a commitment can only be opened by
+    ///      the account that made it. Without it, a watcher who sees a reveal in
+    ///      the mempool could take the plaintext parameters and open a commitment
+    ///      they had copied earlier, claiming someone else's call.
+    /// @param assetId Feed identifier, e.g. `keccak256("BTC/USD")`.
+    /// @param direction Side of the target being claimed.
+    /// @param targetPrice Target, at 8 decimals.
+    /// @param deadline Unix second the prediction is about.
+    /// @param salt 256 bits from a CSPRNG.
+    /// @param analyst Account that will commit.
+    /// @return commitment Hash to pass to `commitCall`.
+    function computeCommitment(
+        bytes32 assetId,
+        Direction direction,
+        int256 targetPrice,
+        uint64 deadline,
+        bytes32 salt,
+        address analyst
+    ) public pure returns (bytes32 commitment) {
+        return keccak256(abi.encode(assetId, direction, targetPrice, deadline, salt, analyst));
+    }
+
+    /// @dev Decide the outcome, write it, and move the stake.
+    ///
+    ///      Equality is a win for both directions: `Above` wins on
+    ///      `price >= target`, `Below` on `price <= target`. Deliberate, and
+    ///      documented in ADR-007 — the alternative silently loses calls that
+    ///      landed exactly on their target.
+    ///
+    ///      Effects before interactions, without exception: `status` leaves
+    ///      `Committed` before `_payout` hands control to an external address,
+    ///      and no path ever returns a call to `Committed`.
+    function _settle(
+        uint256 callId,
+        Call storage stored,
+        address analyst,
+        RevealParams calldata params,
+        int256 settlementPrice
+    ) private {
+        bool won =
+            params.direction == Direction.Above
+                ? settlementPrice >= params.targetPrice
+                : settlementPrice <= params.targetPrice;
+
+        uint256 stake = stored.stake;
+        stored.status = won ? Status.RevealedWin : Status.RevealedLoss;
+
+        if (won) {
+            ++_stats[analyst].wins;
+        } else {
+            ++_stats[analyst].losses;
+        }
+
+        emit CallRevealed(callId, analyst, params.assetId, params.direction, params.targetPrice, settlementPrice, won);
+
+        _payout(callId, won ? analyst : treasury, stake);
+    }
+
+    /// @dev Send `amount` to `to` and record it, reverting if the transfer fails.
+    ///
+    ///      `call{value:}` rather than `transfer()`: the 2,300 gas stipend
+    ///      `transfer` forwards is not a safety feature, it is a hard-coded
+    ///      assumption about opcode pricing that has already been invalidated
+    ///      once. A treasury that is a multisig or a splitter needs more than
+    ///      that and would be permanently unable to receive a slashed stake.
+    ///
+    ///      The return value is checked. `call` reports failure by returning
+    ///      `false`, not by reverting, so an unchecked call would mark a call
+    ///      settled and quietly keep the money.
+    ///
+    ///      A winning analyst whose address rejects ETH cannot be paid, so their
+    ///      reveal reverts and the call eventually forfeits to the treasury.
+    ///      Named in the README's limitations rather than worked around with a
+    ///      pull-payment escrow, which trades one edge case for a second balance
+    ///      to reason about.
+    function _payout(uint256 callId, address to, uint256 amount) private {
+        (bool ok, ) = to.call{value: amount}("");
+        if (!ok) revert StakeTransferFailed(callId, to, amount);
+
+        emit StakeSettled(callId, to, amount);
+    }
+
+    /// @dev Shared entry checks for `revealCall`: the call exists, is still open,
+    ///      and belongs to the caller. Returns the analyst so the caller does not
+    ///      pay for a second `SLOAD` of the same slot.
+    function _requireOpenAndOwned(uint256 callId, Call storage stored) private view returns (address analyst) {
+        Status status = stored.status;
+        if (status == Status.None) revert CallNotFound(callId);
+        if (status != Status.Committed) revert CallNotOpen(callId, status);
+
+        analyst = stored.analyst;
+        if (msg.sender != analyst) revert NotAnalyst(callId, msg.sender, analyst);
     }
 }

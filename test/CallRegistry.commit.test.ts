@@ -592,6 +592,66 @@ describe("CallRegistry - commit", () => {
       );
     });
 
+    it("rejects a zero resolver", async () => {
+      const { registry } = await networkHelpers.loadFixture(deployFixture);
+
+      // Settlement would revert on every reveal, and every open call would run
+      // out its window and forfeit.
+      await viem.assertions.revertWithCustomError(
+        registry.write.setResolver([ZERO_ADDRESS]),
+        registry,
+        "InvalidResolver",
+      );
+    });
+
+    it("rejects a zero treasury", async () => {
+      const { registry } = await networkHelpers.loadFixture(deployFixture);
+
+      await viem.assertions.revertWithCustomError(
+        registry.write.setTreasury([ZERO_ADDRESS]),
+        registry,
+        "InvalidTreasury",
+      );
+    });
+
+    it("raises the minimum stake and announces both values", async () => {
+      const { registry } = await networkHelpers.loadFixture(deployFixture);
+
+      await viem.assertions.emitWithArgs(
+        registry.write.setMinStake([parseEther("0.05")]),
+        registry,
+        "MinStakeUpdated",
+        [MIN_STAKE, parseEther("0.05")],
+      );
+
+      assert.equal(await registry.read.minStake(), parseEther("0.05"));
+    });
+
+    it("moves both horizons in one transaction", async () => {
+      const { registry } = await networkHelpers.loadFixture(deployFixture);
+
+      await viem.assertions.emitWithArgs(
+        registry.write.setHorizons([BigInt(2 * ONE_HOUR), BigInt(7 * ONE_DAY)]),
+        registry,
+        "HorizonsUpdated",
+        [BigInt(2 * ONE_HOUR), BigInt(7 * ONE_DAY)],
+      );
+
+      assert.equal(await registry.read.minHorizon(), BigInt(2 * ONE_HOUR));
+      assert.equal(await registry.read.maxHorizon(), BigInt(7 * ONE_DAY));
+    });
+
+    it("announces a reveal window change", async () => {
+      const { registry } = await networkHelpers.loadFixture(deployFixture);
+
+      await viem.assertions.emitWithArgs(
+        registry.write.setRevealWindow([24 * ONE_HOUR]),
+        registry,
+        "RevealWindowUpdated",
+        [REVEAL_WINDOW, 24 * ONE_HOUR],
+      );
+    });
+
     it("rejects every setter from an account without DEFAULT_ADMIN_ROLE", async () => {
       const { registry, resolver, other } = await networkHelpers.loadFixture(deployFixture);
 
