@@ -109,16 +109,26 @@ value the entire protocol depends on.
 
 ## Storage layout — `Call`
 
-| slot | packed contents                                         | bytes used |
-| ---- | ------------------------------------------------------- | ---------- |
-| 0    | `address analyst` + `uint64 deadline` + `Status status` | 29 / 32    |
-| 1    | `bytes32 commitment`                                    | 32         |
-| 2    | `uint256 stake`                                         | 32         |
+| slot | packed contents                                                                 | bytes used |
+| ---- | ------------------------------------------------------------------------------- | ---------- |
+| 0    | `address analyst` + `uint64 deadline` + `uint24 revealWindow` + `Status status` | 32 / 32    |
+| 1    | `bytes32 commitment`                                                            | 32         |
+| 2    | `uint256 stake`                                                                 | 32         |
 
-Three slots. `committedAt` is _not_ stored — no on-chain path reads it, and a
-cold `SSTORE` to a fourth slot would cost every analyst 20,000 gas to serve
-readers who are reading event logs anyway
-([[ADR-006-drop-committedat-from-struct]]).
+Three slots, the first one exactly full.
+
+`revealWindow` is stored **per call**, copied from the protocol parameter at
+commit time. Reading the global value live at reveal time would let an admin who
+shortened it retroactively close the window on calls that were already open, and
+force forfeits on analysts who had done nothing wrong. `uint24` caps a window at
+roughly 194 days — far past any value worth setting — and is what makes the
+snapshot fit in the slot instead of costing a fourth one.
+
+`committedAt` is _not_ stored: no on-chain path reads it, and a cold `SSTORE` to
+a fourth slot would cost every analyst 20,000 gas to serve readers who are
+reading event logs anyway ([[ADR-006-drop-committedat-from-struct]]). The same
+argument is why the sum of open stakes is not tracked in storage either — it is
+derivable from the calls themselves, and invariant 6 is asserted by summing them.
 
 ## Trust boundaries
 
