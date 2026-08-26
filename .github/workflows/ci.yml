@@ -53,3 +53,39 @@ jobs:
 
       - name: Coverage
         run: npm run coverage
+
+  frontend:
+    name: frontend build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      - run: npm ci
+
+      # The frontend imports ABIs from a generated, committed file. Compiling the
+      # contracts and re-running the generator here is what turns "the committed
+      # copy drifted from the contracts" from a runtime decode error into a red
+      # build.
+      - name: Compile contracts
+        run: npm run build
+
+      - name: Check the committed ABIs match the contracts
+        run: npm run export-abi:check
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      # `npm run build` in the frontend runs `tsc --noEmit` before vite, so a
+      # type error fails here rather than shipping.
+      - name: Type-check and build the frontend
+        run: npm run build --prefix frontend

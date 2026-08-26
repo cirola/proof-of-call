@@ -1,8 +1,8 @@
 ---
 title: Architecture
 status: living
-phase: F3
-tags: [architecture, contracts, oracle]
+phase: F5
+tags: [architecture, contracts, oracle, frontend]
 ---
 
 # Architecture
@@ -188,10 +188,34 @@ Pausing is limited to `commitCall` on purpose — a pause that could reach
 
 ## Off-chain surface
 
-- **Leaderboard ranking** is computed from event logs, not from chain state. It
-  weights each call by the distance between its target and the spot price at
-  commit time, which the chain cannot know
-  ([[ADR-004-trivial-target-measured-off-chain]]). The ranking is a claim by this
-  frontend; the raw win/loss/forfeit counts are chain data.
-- **Salt custody** is entirely client-side. The contract never sees a salt before
-  the reveal, and losing it is unrecoverable.
+Built in F5, under `frontend/`. Three things happen there that cannot happen
+on-chain, and each one is a place where a mistake costs a stake rather than
+throwing an error.
+
+| Module               | Responsibility                                                                                              |
+| -------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `lib/salt.ts`        | CSPRNG salt generation, the browser-local vault, export and import                                          |
+| `lib/roundSearch.ts` | Binary search over `getRoundData` for the round covering a deadline                                         |
+| `lib/boldness.ts`    | The off-chain weighting the leaderboard ranks by                                                            |
+| `lib/errors.ts`      | Custom revert errors turned into messages that say whether to retry                                         |
+| `hooks/useCalls.ts`  | The registry as state (`getCall` by multicall) plus events (`CallCommitted`/`CallRevealed`)                 |
+| `contracts/abis.ts`  | Generated from `artifacts/`, committed, checked in CI ([[ADR-012-generated-abi-committed-to-the-frontend]]) |
+
+- **The commitment is hashed by the contract**, through the `pure`
+  `computeCommitment`, never by re-implementing `abi.encode` in TypeScript. A
+  divergence between the two encodings does not throw and does not fail a test —
+  it produces a commitment that can never be opened.
+- **Salt custody** is entirely client-side and unrecoverable by design. The
+  contract never sees a salt before the reveal. Generation is
+  `crypto.getRandomValues` only; a missing CSPRNG blocks the commit rather than
+  falling back ([[ADR-013-salt-custody-is-browser-local]]).
+- **The settlement round id** has to be found before a reveal transaction can be
+  built at all, because Chainlink publishes no timestamp-to-round index. The
+  search stays inside the feed's current aggregator phase and surfaces the
+  phase-boundary case as a manual entry rather than returning the wrong round
+  ([[ADR-010-settlement-reads-the-round-covering-the-deadline]]).
+- **Leaderboard ranking** weights each call by the distance between its target
+  and the spot price at commit time, fetched by the same round search. The
+  ranking is a claim by this frontend and is labelled as one on the page; the
+  raw win/loss/forfeit counts are chain data
+  ([[ADR-014-leaderboard-weights-calls-off-chain]]).

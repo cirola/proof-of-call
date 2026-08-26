@@ -1,0 +1,33 @@
+{
+  "name": "proof-of-call-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "React client for the Proof of Call registry",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@rainbow-me/rainbowkit": "2.2.8",
+    "@tanstack/react-query": "5.90.2",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-router-dom": "6.30.1",
+    "viem": "2.56.0",
+    "wagmi": "2.19.5"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "@vitejs/plugin-react": "4.3.4",
+    "typescript": "5.9.2",
+    "vite": "5.4.20"
+  }
+}

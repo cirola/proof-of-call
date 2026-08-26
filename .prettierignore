@@ -4,6 +4,10 @@ cache/
 coverage/
 types/
 ignition/deployments/
+frontend/node_modules/
 frontend/dist/
-frontend/src/generated.ts
+frontend/package-lock.json
+# Generated from the compiled artifacts by scripts/export-abi.js. Formatting it
+# would make `npm run export-abi` produce a diff on every run.
+frontend/src/contracts/abis.ts
 package-lock.json

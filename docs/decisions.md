@@ -20,3 +20,6 @@ Records are immutable once `accepted`. A reversal is a new ADR carrying
 | [ADR-009](./decisions/ADR-009-initial-protocol-parameters.md)                      | Initial protocol parameters                                       | F0    | accepted |
 | [ADR-010](./decisions/ADR-010-settlement-reads-the-round-covering-the-deadline.md) | Settlement reads the round covering the deadline                  | F3    | accepted |
 | [ADR-011](./decisions/ADR-011-transient-reentrancy-guard-over-plain-cei.md)        | Transient reentrancy guard on top of strict CEI                   | F3    | accepted |
+| [ADR-012](./decisions/ADR-012-generated-abi-committed-to-the-frontend.md)          | Generated ABI file, committed to the frontend                     | F5    | accepted |
+| [ADR-013](./decisions/ADR-013-salt-custody-is-browser-local.md)                    | Salt custody is browser-local, with export at commit time         | F5    | accepted |
+| [ADR-014](./decisions/ADR-014-leaderboard-weights-calls-off-chain.md)              | Leaderboard weights calls off-chain and labels it a claim         | F5    | accepted |

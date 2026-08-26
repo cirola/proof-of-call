@@ -2,7 +2,7 @@
 title: Worklog
 status: living
 tags: [worklog, progress, handoff]
-updated: 2026-08-23
+updated: 2026-08-26
 ---
 
 # Worklog
@@ -12,8 +12,10 @@ session picks up. Architecture decisions live in [[decisions]]; the properties
 the protocol claims live in [[invariants]]; the attacks and residual risks live
 in [[threat-model]]. This file is the narrative and the handoff.
 
-**Current position: contracts complete. F0–F4 and F6 done and committed. F5
-(frontend) is the only phase left.**
+**Current position: contracts and frontend complete. F0–F6 done and committed.
+What is left is not code — it is a Sepolia deployment, which needs a funded
+wallet, and a first push to a remote, which needs a decision about commit
+trailers.**
 
 ---
 
@@ -28,8 +30,9 @@ in [[threat-model]]. This file is the narrative and the handoff.
 | F3    | `revealCall`, `forfeit`, settlement, fuzzing | done — 1 commit                                           |
 | F4    | Ignition deploy module                       | done — module written and tested on the simulated network |
 | F6    | CI + docs                                    | done — GitHub Actions, invariants doc, threat model       |
-| F5    | Frontend                                     | **next**                                                  |
-| —     | Actual Sepolia deployment + Etherscan verify | pending — needs a funded faucet wallet                    |
+| F5    | Frontend                                     | done — 1 commit. Four screens, type-checked and built     |
+| —     | Actual Sepolia deployment + Etherscan verify | **next** — needs a funded faucet wallet                   |
+| —     | First push to a remote                       | pending — CI has still never executed                     |
 
 ## Verify the current state in one command
 
@@ -39,6 +42,17 @@ npm run build && npm test && npm run lint && npm run format:check
 
 Expected today: compiles, **122 passing** (116 node:test, 6 Solidity fuzz),
 solhint silent, prettier clean.
+
+The frontend is a separate package with its own lockfile:
+
+```bash
+npm run export-abi:check && npm --prefix frontend ci && npm run frontend:build
+```
+
+Expected: ABIs up to date, `tsc --noEmit` silent under `strict` plus
+`noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`, vite build green.
+The chunk-size warning on the wallet bundle is RainbowKit and WalletConnect and
+is expected.
 
 `npm run coverage` reports `CallRegistry.sol` and `PriceOracleResolver.sol` at
 **100.00 line / 100.00 statement**, 97.51% overall — the remainder is unexercised
@@ -209,6 +223,93 @@ All three are written up in [[threat-model]]:
 
 ---
 
+---
+
+## Session 3 — 2026-08-26
+
+F5. One commit: the whole frontend, plus the ABI generator and a second CI job.
+
+### Shape
+
+`frontend/` is a separate npm package with its own lockfile, not a workspace —
+one less build-system concept in a repository whose primary toolchain is
+Hardhat, and CI installs the two independently anyway. React + Vite + wagmi
+2.19.5 + RainbowKit 2, four routes: Commit, Calls, Leaderboard, Vault.
+
+No CSS framework. The whole surface is four pages of forms and tables, and a
+utility framework would have added a build step and a class vocabulary in
+exchange for markup that reads worse than one stylesheet with tokens at the top.
+
+### The three places a mistake costs a stake rather than an error
+
+1. **The commitment is hashed by the contract.** `computeCommitment` is `public
+pure` precisely so the frontend never re-implements `abi.encode`. A divergence
+   between the two encodings does not throw and does not fail a test — it
+   produces a commitment nobody can open.
+2. **The salt is written to the vault before the transaction is signed.** Signing
+   first leaves a window in which a closed tab loses the salt for a call that is
+   already on-chain and already holding money. `crypto.getRandomValues` only; a
+   missing CSPRNG blocks the commit rather than falling back, because a weak salt
+   looks exactly like a strong one.
+   [[ADR-013-salt-custody-is-browser-local]].
+3. **The asset picker only offers assets with a feed on this deployment**,
+   checked against `isSupported`. `commitCall` takes a hash and cannot check; a
+   call against an unconfigured asset commits fine and can never be revealed.
+
+### The round search
+
+`lib/roundSearch.ts` is the off-chain half of ADR-010 and the reason the contract
+is not usable from a block explorer alone. Binary search over `getRoundData`,
+sound because `updatedAt` is monotonic within a phase.
+
+Details worth not rediscovering:
+
+- A round id is `(phaseId << 64) | aggregatorRoundId`. The search decomposes
+  `latestRoundData().roundId`, searches `[1, latestInPhase]`, and recomposes.
+- If the feed has not published since the deadline, the latest round _is_ the
+  answer and there is no successor to reject it — a separate branch, not a
+  degenerate case of the search.
+- A `getRoundData` that reverts is treated as "not found" and the search moves
+  left. Same normalization `PriceOracleResolver._readRound` does on-chain; within
+  a live phase the gaps are at the top, not the bottom.
+- The phase boundary is not crossed. The reveal form exposes a manual round id
+  for that case rather than silently returning the wrong round — ADR-010's
+  residual gap, surfaced instead of hidden.
+
+### State versus events
+
+`useCalls` fetches contract state by multicall over `getCall` — authoritative,
+cannot be missed — and the reveal plaintext and `committedAt` from logs, because
+neither is stored. The log half is best-effort and wrapped in a `try`: a public
+Sepolia endpoint that refuses the range costs the leaderboard its weighting, not
+the app its correctness, and `logsAvailable` tells the UI which happened. Log
+queries are chunked and halve on a range error, since an over-wide range returns
+an error rather than partial data.
+
+### Leaderboard
+
+Counts from chain state. The ranking weights each call by
+`|target - spot at commit| / spot at commit`, capped, minus a flat penalty per
+forfeit set equal to the reference weight — silence should cost about what an
+ordinary loss costs, or it becomes the cheap exit.
+[[ADR-014-leaderboard-weights-calls-off-chain]].
+
+The spot price at commit is fetched by the same binary search, serially so a
+public endpoint does not rate-limit the page, cached in `localStorage` because a
+past price never changes. Calls whose spot cannot be recovered are counted and
+shown as unweighted rather than guessed at.
+
+### Problems hit, and the fixes
+
+| Symptom                                                        | Cause                                                                                                 | Fix                                                                        |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `vite build` failed: `"sendCallsSync" is not exported by viem` | viem pinned at 2.37.6; the `@wagmi/core` 2.22.1 that wagmi 2.19.5 resolves needs a newer one          | viem pinned to 2.56.0. wagmi stays on the 2.x line per ADR-001             |
+| Blank page, `Uncaught Error: No projectId found`               | RainbowKit's `connectorsForWallets` validates the project id even with no WalletConnect wallet listed | Fall back to wagmi's own `injected()` connector when the env var is absent |
+| `exactOptionalPropertyTypes` rejected the vault merge          | Spreading a `number \| undefined` into a field typed `number?`                                        | Spread conditionally instead of unconditionally                            |
+
+Verified by loading the built bundle in a real browser: all four routes render
+with an empty console.
+
 ## Environment facts worth not rediscovering
 
 - Repo path contains a space (`04_PROYECTOS/Proof of Call`). Nothing has broken,
@@ -231,63 +332,55 @@ All three are written up in [[threat-model]]:
 
 ## Next session — start here
 
-### F5 — the frontend
+There is no code left in the plan. Two things stand between this and done, and
+both need a decision rather than a keyboard.
 
-Stack is fixed: React + Vite + wagmi 2.19.5 + RainbowKit 2
-([[ADR-001-pin-wagmi-v2]]). Nothing about it has been scaffolded yet.
+### 1. Decide about the remote, before there is one
 
-Four screens, in dependency order:
+- **Strip the `Co-Authored-By: Claude Opus 5` trailers** if this is going public.
+  Trivial while no remote exists, painful afterwards.
+- Then add a remote and push. **CI has never executed.** It is written and now
+  has two jobs — contracts, and the frontend build with the ABI drift check — and
+  the first push is the first time either runs.
 
-1. **Commit.** Asset picker (only configured assets — the contract cannot check,
-   so this is the only thing standing between a user and an unrevealable call),
-   direction, target price at 8 decimals, deadline picker bounded by
-   `minHorizon`/`maxHorizon`, stake input floored at `minStake`.
+### 2. The Sepolia deployment
 
-   The salt is generated with **`crypto.getRandomValues`, never `Math.random`**,
-   and the commitment is computed by calling `computeCommitment` on the contract
-   rather than by re-implementing `abi.encode` in TypeScript. There is already a
-   test asserting the two agree — keep it that way; a divergence produces a lost
-   stake and no error message.
+`npm run deploy:sepolia` is wired and the module is exercised by a test on the
+simulated network, but it has never been pointed at a real chain. It needs:
 
-2. **Salt custody.** The hard part of the UX, not an afterthought. Store locally,
-   offer a download, and say in plain language that losing it forfeits the stake.
-   Nothing recovers it.
-
-3. **Reveal.** Needs the settlement round id, which means a **binary search over
-   `getRoundData`** on the feed to find the last round at or before the deadline.
-   Monotonic `updatedAt` makes it straightforward; the phase-boundary caveat in
-   ADR-010 is the edge case. Getting this wrong shows up as
-   `LaterRoundAvailable` or `RoundAfterTimestamp`, both of which are recoverable
-   by retrying with the right id — worth surfacing as a readable message rather
-   than a raw revert.
-
-4. **Leaderboard.** Built from event logs, not from chain state. Raw
-   win/loss/forfeit counts come from `getStats`; the _ranking_ weights each call
-   by the distance between its target and the spot price at commit time, which
-   the chain cannot know ([[ADR-004-trivial-target-measured-off-chain]]).
-   `CallCommitted` carries `committedAt` precisely so this is computable. Label
-   the ranking as a claim by the frontend and the counts as chain data.
-
-### Then: the actual Sepolia deployment
-
-`npm run deploy:sepolia` is wired and the module is tested locally, but it has
-never been pointed at a real network. It needs:
-
-- A dedicated, disposable wallet funded from a faucet.
+- A dedicated, disposable wallet funded from a faucet. Never one that has touched
+  mainnet.
 - The three keystore secrets set (`SEPOLIA_RPC_URL`, `SEPOLIA_PRIVATE_KEY`,
   `ETHERSCAN_API_KEY`).
 - A check that the two Chainlink proxy addresses in the module are still the
   current Sepolia ones before spending gas.
+- A decision on the build profile: the module currently deploys the `default`
+  profile, which has the optimizer **off** on purpose so coverage and stack
+  traces stay accurate. Anything real should go out with `production`.
 
-Afterwards: paste the deployed addresses and the Etherscan links into the README
-status block, and record the feed addresses actually used so a future
-deprecation can be traced.
+Afterwards:
+
+- Paste the deployed addresses and the Etherscan links into the README status
+  block, and record the feed addresses actually used so a future deprecation can
+  be traced.
+- Fill `frontend/.env.local` with the two addresses, `VITE_DEPLOY_BLOCK` (the
+  block the registry landed in — log queries start there instead of at zero), and
+  an RPC URL that answers `eth_getLogs`.
+- Walk one call end to end on Sepolia: commit, wait out a short horizon, run the
+  round search, reveal. That is the first time the binary search meets a real
+  Chainlink feed, and it is the single highest-value test left.
 
 ### Smaller things, if time allows
 
+- **A WalletConnect project id.** Without one the client is injected-wallets-only,
+  which the footer states rather than hides.
 - **Gas snapshot.** `hardhat test --gas-stats` exists; a committed baseline would
   make the storage-layout arguments in the ADRs checkable rather than asserted.
-- **Exclude `contracts/mocks/` from coverage** so the number reported is about
-  the protocol. Currently the mocks are the only thing below 100%.
-- **Strip the `Co-Authored-By` trailers** if this is going public — decide before
-  a remote exists.
+- **Exclude `contracts/mocks/` from coverage** so the number reported is about the
+  protocol. The mocks are the only thing below 100%.
+- **Encrypt the vault at rest** with a passphrase. It would raise the cost of a
+  stolen backup file; it does not change the XSS story, which is already the
+  origin's problem.
+- **Frontend tests.** There are none. The two worth writing are `roundSearch`
+  against a mock aggregator, and the `parsePrice` boundary — both are places
+  where being wrong is silent.

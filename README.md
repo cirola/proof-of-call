@@ -3,11 +3,10 @@
 An on-chain registry for market predictions, where the track record includes the
 losses because the protocol will not let you delete them.
 
-> **Status:** contracts complete and tested; frontend in progress.
-> Phases F0–F4 and F6 done — scaffold, oracle layer, full commit-reveal
-> lifecycle, Ignition deployment module, CI. 122 tests, 100% line and statement
-> coverage on both production contracts. Deployment links land when the Sepolia
-> deployment is run.
+> **Status:** contracts and frontend complete. Phases F0–F6 done — scaffold,
+> oracle layer, full commit-reveal lifecycle, Ignition deployment module, CI, and
+> the React client. 122 tests, 100% line and statement coverage on both
+> production contracts. Deployment links land when the Sepolia deployment is run.
 
 ---
 
@@ -190,6 +189,48 @@ Stated here rather than discovered later.
    the reveal transaction. Standard for anything that settles at an expiry, but
    it means the contract is not usable from a block explorer alone.
 
+## The frontend
+
+Four screens under [`frontend/`](./frontend), React + Vite + wagmi 2 +
+RainbowKit 2. Three of them do work the contracts cannot do for themselves.
+
+- **Commit.** Asset picker limited to assets that actually have a feed on the
+  connected deployment — `commitCall` takes a hash and cannot check, so this list
+  is the only thing standing between a user and a call that can never be
+  revealed. The salt comes from `crypto.getRandomValues`, and the commitment is
+  computed by calling the contract's own `pure` `computeCommitment` rather than
+  re-implementing `abi.encode` in TypeScript, where a divergence would surface as
+  a lost stake and no error message.
+- **Vault.** Salt custody, given a page of its own rather than a tooltip. The
+  salt is written to browser storage _before_ the transaction is signed, the
+  commit success screen leads with a download button, and import merges rather
+  than replaces so restoring a backup does not delete live calls. Losing a salt
+  is unrecoverable and the UI says so in those words
+  ([ADR-013](./docs/decisions/ADR-013-salt-custody-is-browser-local.md)).
+- **Calls.** Reveal and forfeit. Revealing needs the settlement round id, which
+  means a binary search over the feed's history before the transaction can even
+  be built; the search is an explicit step because it makes a dozen RPC calls and
+  can legitimately fail. `LaterRoundAvailable`, `RoundAfterTimestamp` and the rest
+  are translated into messages that say whether retrying will help. Forfeit is
+  offered on every overdue call, by anyone — that is what makes attack A cost
+  something.
+- **Leaderboard.** Counts from chain state; ranking weighted by how far each
+  target was from the spot price at commit time, computed off-chain, with the
+  formula printed under the table and labelled as a claim by this frontend
+  ([ADR-014](./docs/decisions/ADR-014-leaderboard-weights-calls-off-chain.md)).
+
+```bash
+npm run frontend:install
+cp frontend/.env.example frontend/.env.local   # fill in the deployed addresses
+npm run frontend:dev
+```
+
+The ABIs the frontend imports are generated from the compiled artifacts by
+`npm run export-abi` and committed, so the frontend builds on a machine that has
+never compiled the contracts. CI recompiles and re-runs the generator with
+`--check`, which turns ABI drift into a red build rather than an unnamed revert
+([ADR-012](./docs/decisions/ADR-012-generated-abi-committed-to-the-frontend.md)).
+
 ## Architecture
 
 | Contract                  | Responsibility                                                              |
@@ -225,6 +266,9 @@ npm run test:solidity  # Solidity fuzz properties only
 npm run coverage       # built-in coverage (Hardhat 3; not solidity-coverage)
 npm run lint           # solhint
 npm run format:check   # prettier
+
+npm run export-abi     # regenerate frontend/src/contracts/abis.ts
+npm run frontend:build # type-check and build the client
 ```
 
 CI runs all of the above on every push and pull request.

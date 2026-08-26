@@ -17,7 +17,12 @@
     "lint": "solhint \"contracts/**/*.sol\"",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "deploy:sepolia": "hardhat ignition deploy ignition/modules/ProofOfCall.ts --network sepolia --verify"
+    "deploy:sepolia": "hardhat ignition deploy ignition/modules/ProofOfCall.ts --network sepolia --verify",
+    "export-abi": "node scripts/export-abi.js",
+    "export-abi:check": "node scripts/export-abi.js --check",
+    "frontend:install": "npm --prefix frontend install",
+    "frontend:dev": "npm --prefix frontend run dev",
+    "frontend:build": "npm --prefix frontend run build"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox-viem": "^5.0.7",
