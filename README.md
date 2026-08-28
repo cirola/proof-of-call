@@ -332,6 +332,15 @@ revert on a missing feed. Everything network-specific is a parameter with a
 Sepolia default. The module is exercised by a test on the simulated network
 before it is ever pointed at a real one.
 
+The script passes `--build-profile production`, which turns the optimizer on.
+Tests and coverage deliberately run on the `default` profile with it off, so
+line hit-counts and stack traces stay accurate; nothing deployed should carry
+that penalty.
+
+Then point the frontend at it — copy `frontend/.env.example` to
+`frontend/.env.local` and fill in the two addresses plus `VITE_DEPLOY_BLOCK`,
+the block the registry landed in.
+
 ## License
 
 MIT

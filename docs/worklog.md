@@ -386,9 +386,10 @@ simulated network, but it has never been pointed at a real chain. It needs:
   `ETHERSCAN_API_KEY`).
 - A check that the two Chainlink proxy addresses in the module are still the
   current Sepolia ones before spending gas.
-- A decision on the build profile: the module currently deploys the `default`
-  profile, which has the optimizer **off** on purpose so coverage and stack
-  traces stay accurate. Anything real should go out with `production`.
+- ~~A decision on the build profile.~~ Decided: `npm run deploy:sepolia` now
+  passes `--build-profile production`, so the optimizer is on for anything
+  deployed. Tests and coverage stay on `default` with it off, where accurate
+  line hit-counts matter more than gas.
 
 Afterwards:
 

@@ -17,7 +17,7 @@
     "lint": "solhint \"contracts/**/*.sol\"",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "deploy:sepolia": "hardhat ignition deploy ignition/modules/ProofOfCall.ts --network sepolia --verify",
+    "deploy:sepolia": "hardhat --build-profile production ignition deploy ignition/modules/ProofOfCall.ts --network sepolia --verify",
     "demo": "node scripts/demo.js",
     "demo:deploy": "hardhat run scripts/demo-deploy.ts",
     "export-abi": "node scripts/export-abi.js",
