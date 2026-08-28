@@ -11,7 +11,7 @@ import {
   explorerTx,
   isDeployed,
 } from "../contracts/addresses";
-import { Callout, Empty, Field, Spinner, StatusPill } from "../components/ui";
+import { Callout, Empty, ExplorerLink, Field, Spinner, StatusPill } from "../components/ui";
 import { assetLabel } from "../lib/assets";
 import { errorMessage } from "../lib/errors";
 import {
@@ -163,9 +163,9 @@ export default function CallsPage() {
                   <tr key={call.id.toString()}>
                     <td className="mono">#{call.id.toString()}</td>
                     <td>
-                      <a href={explorerAddress(call.analyst)} target="_blank" rel="noreferrer">
+                      <ExplorerLink href={explorerAddress(call.analyst)}>
                         {shortAddress(call.analyst)}
-                      </a>
+                      </ExplorerLink>
                     </td>
                     <td>
                       <StatusPill status={call.status} />
@@ -371,11 +371,7 @@ function RevealPanel({ call, onSettled }: { call: ProtocolCall; onSettled: () =>
       <Callout tone="good" title="Revealed">
         <p>
           The contract re-hashed the parameters, read the feed at the deadline, and recorded the
-          outcome.{" "}
-          <a href={explorerTx(state.txHash)} target="_blank" rel="noreferrer">
-            View transaction
-          </a>
-          .
+          outcome. <ExplorerLink href={explorerTx(state.txHash)}>View transaction</ExplorerLink>.
         </p>
       </Callout>
     );
@@ -492,9 +488,9 @@ function ForfeitRow({ call, onSettled }: { call: ProtocolCall; onSettled: () => 
     <tr>
       <td className="mono">#{call.id.toString()}</td>
       <td>
-        <a href={explorerAddress(call.analyst)} target="_blank" rel="noreferrer">
+        <ExplorerLink href={explorerAddress(call.analyst)}>
           {shortAddress(call.analyst)}
-        </a>
+        </ExplorerLink>
       </td>
       <td>
         {formatDateTime(call.revealDeadline)}{" "}

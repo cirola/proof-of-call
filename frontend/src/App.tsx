@@ -2,8 +2,14 @@ import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { useAccount, useChainId } from "wagmi";
 
-import { CHAIN, REGISTRY_ADDRESS, explorerAddress, isDeployed } from "./contracts/addresses";
-import { Callout } from "./components/ui";
+import {
+  CHAIN,
+  REGISTRY_ADDRESS,
+  explorerAddress,
+  isDeployed,
+  isLocalChain,
+} from "./contracts/addresses";
+import { Callout, ExplorerLink } from "./components/ui";
 import { shortAddress } from "./lib/format";
 import { hasWalletConnect } from "./wagmi";
 import CommitPage from "./routes/CommitPage";
@@ -55,7 +61,18 @@ export default function App() {
               <p>
                 Set <code>VITE_REGISTRY_ADDRESS</code> and <code>VITE_RESOLVER_ADDRESS</code> in{" "}
                 <code>frontend/.env.local</code> to the addresses printed by{" "}
-                <code>npm run deploy:sepolia</code>. Until then every page is read-only and empty.
+                <code>npm run demo</code> (local node) or <code>npm run deploy:sepolia</code>. Until
+                then every page is read-only and empty.
+              </p>
+            </Callout>
+          ) : null}
+
+          {isLocalChain && isDeployed ? (
+            <Callout tone="info" title="Local demo node">
+              <p>
+                This build talks to a Hardhat node on your machine, against mock Chainlink
+                aggregators driven by <code>npm run demo</code>. Nothing here is on a public chain,
+                the ETH is not real, and the state disappears when the node stops.
               </p>
             </Callout>
           ) : null}
@@ -90,9 +107,9 @@ export default function App() {
             <NavLink to="/leaderboard">how it is computed</NavLink>.
           </span>
           {isDeployed ? (
-            <a href={explorerAddress(REGISTRY_ADDRESS)} target="_blank" rel="noreferrer">
+            <ExplorerLink href={explorerAddress(REGISTRY_ADDRESS)}>
               Registry {shortAddress(REGISTRY_ADDRESS)}
-            </a>
+            </ExplorerLink>
           ) : null}
         </div>
       </footer>

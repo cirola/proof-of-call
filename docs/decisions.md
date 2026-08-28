@@ -23,3 +23,4 @@ Records are immutable once `accepted`. A reversal is a new ADR carrying
 | [ADR-012](./decisions/ADR-012-generated-abi-committed-to-the-frontend.md)          | Generated ABI file, committed to the frontend                     | F5    | accepted |
 | [ADR-013](./decisions/ADR-013-salt-custody-is-browser-local.md)                    | Salt custody is browser-local, with export at commit time         | F5    | accepted |
 | [ADR-014](./decisions/ADR-014-leaderboard-weights-calls-off-chain.md)              | Leaderboard weights calls off-chain and labels it a claim         | F5    | accepted |
+| [ADR-015](./decisions/ADR-015-local-demo-harness-with-simulated-analysts.md)       | Local demo harness with mock feeds and simulated analysts         | F6    | accepted |

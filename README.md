@@ -10,6 +10,36 @@ losses because the protocol will not let you delete them.
 
 ---
 
+## See it running
+
+```bash
+npm install
+npm run frontend:install
+npm run demo
+```
+
+One command. It starts a Hardhat node, deploys the real Ignition module against
+mock Chainlink aggregators, publishes a new price round every five seconds, and
+serves the frontend already pointed at the addresses it just deployed —
+`http://localhost:5173`. Ctrl-C stops all three.
+
+Three simulated analysts commit calls, reveal most of them, and abandon some, so
+the registry, the leaderboard and the forfeit path have something in them within
+a few minutes. To make your own call, add the network to MetaMask
+(`http://127.0.0.1:8545`, chain id `31337`) and import one of the private keys
+the node prints.
+
+Two protocol parameters are relaxed for the demo: the minimum horizon drops from
+one hour to two minutes, and the reveal window from 48 hours to one, so the
+commit → wait → reveal loop fits inside a coffee break. Everything else is the
+deployment Sepolia gets. The contracts, the resolver, the round search and
+settlement are the production ones; the only fiction is who publishes the rounds.
+
+Nothing here touches a public chain, and the state disappears when the node
+stops.
+
+---
+
 ## The problem
 
 Every crypto analyst publishes the calls they got right. Screenshots of the wins,
@@ -269,6 +299,9 @@ npm run format:check   # prettier
 
 npm run export-abi     # regenerate frontend/src/contracts/abis.ts
 npm run frontend:build # type-check and build the client
+
+npm run demo           # node + deployment + price keeper + frontend, one command
+npm run demo:deploy    # just the deployment and keeper, against a node you started
 ```
 
 CI runs all of the above on every push and pull request.

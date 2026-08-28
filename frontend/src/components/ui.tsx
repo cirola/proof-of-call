@@ -7,6 +7,29 @@ import { STATUS_LABEL, Status } from "../lib/format";
  * component into a network request.
  */
 
+/**
+ * A link to a block explorer, degrading to plain text when there is none.
+ *
+ * The local demo node has no explorer. Rendering an Etherscan link for an
+ * address that only exists on one laptop is worse than rendering nothing: it
+ * looks live and lands on a "not found" page. `explorerTx` and `explorerAddress`
+ * return `undefined` there, and this swallows the anchor.
+ */
+export function ExplorerLink({
+  href,
+  children,
+}: {
+  href: string | undefined;
+  children: ReactNode;
+}) {
+  if (!href) return <>{children}</>;
+  return (
+    <a href={href} target="_blank" rel="noreferrer">
+      {children}
+    </a>
+  );
+}
+
 export function Callout({
   tone = "info",
   title,

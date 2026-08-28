@@ -37,6 +37,18 @@ export default defineConfig({
       type: "edr-simulated",
       chainType: "l1",
     },
+    // The demo target. `npm run demo` starts `hardhat node` on this port and
+    // then deploys the protocol against mock aggregators, so the whole
+    // commit/reveal loop is walkable without a faucet or a key. Accounts are
+    // `remote` on purpose: the node owns them, they are the well-known Hardhat
+    // test accounts, and no private key needs to exist in this repository for
+    // the demo to run.
+    localhost: {
+      type: "http",
+      chainType: "l1",
+      url: "http://127.0.0.1:8545",
+      accounts: "remote",
+    },
     sepolia: {
       type: "http",
       chainType: "l1",

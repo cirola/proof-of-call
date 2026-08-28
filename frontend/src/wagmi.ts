@@ -1,7 +1,7 @@
 import { getDefaultConfig } from "@rainbow-me/rainbowkit";
 import { createConfig, http } from "wagmi";
 import { injected } from "wagmi/connectors";
-import { CHAIN } from "./contracts/addresses";
+import { CHAIN, RPC_URL } from "./contracts/addresses";
 
 /**
  * Wallet and transport configuration.
@@ -21,7 +21,7 @@ import { CHAIN } from "./contracts/addresses";
 const projectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID?.trim();
 
 const transports = {
-  [CHAIN.id]: http(import.meta.env.VITE_SEPOLIA_RPC_URL || undefined),
+  [CHAIN.id]: http(RPC_URL),
 };
 
 /** False when this build can only reach injected wallets. Surfaced in the UI. */

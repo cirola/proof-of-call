@@ -1,7 +1,7 @@
 import { useAccount } from "wagmi";
 
 import { explorerAddress, isDeployed } from "../contracts/addresses";
-import { Callout, Empty, Spinner } from "../components/ui";
+import { Callout, Empty, ExplorerLink, Spinner } from "../components/ui";
 import { EDGE_REFERENCE, FORFEIT_PENALTY, MAX_WEIGHT } from "../lib/boldness";
 import { formatStake, shortAddress } from "../lib/format";
 import { useCalls } from "../hooks/useCalls";
@@ -67,9 +67,9 @@ export default function LeaderboardPage() {
                 {rows.map((row) => (
                   <tr key={row.analyst}>
                     <td>
-                      <a href={explorerAddress(row.analyst)} target="_blank" rel="noreferrer">
+                      <ExplorerLink href={explorerAddress(row.analyst)}>
                         {shortAddress(row.analyst)}
-                      </a>
+                      </ExplorerLink>
                       {address && row.analyst.toLowerCase() === address.toLowerCase() ? (
                         <span className="pill open" style={{ marginLeft: "0.5rem" }}>
                           you

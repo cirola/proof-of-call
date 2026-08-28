@@ -5,7 +5,7 @@ import { useAccount, usePublicClient, useWriteContract } from "wagmi";
 
 import { callRegistryAbi } from "../contracts/abis";
 import { CHAIN, REGISTRY_ADDRESS, explorerTx, isDeployed } from "../contracts/addresses";
-import { Callout, Field, Spinner } from "../components/ui";
+import { Callout, ExplorerLink, Field, Spinner } from "../components/ui";
 import { ASSETS } from "../lib/assets";
 import { errorMessage } from "../lib/errors";
 import {
@@ -389,9 +389,7 @@ function SuccessCard({
     <div className="card">
       <div className="card-title">
         <h2>Call #{callId.toString()} is on-chain</h2>
-        <a href={explorerTx(txHash)} target="_blank" rel="noreferrer">
-          View transaction
-        </a>
+        <ExplorerLink href={explorerTx(txHash)}>View transaction</ExplorerLink>
       </div>
 
       <Callout tone="danger" title="Back up the salt now">

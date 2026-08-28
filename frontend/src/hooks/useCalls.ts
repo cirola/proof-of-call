@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { getAbiItem, type Address, type Hex } from "viem";
+import { getAbiItem, type Address, type Hex, type PublicClient } from "viem";
 import { usePublicClient } from "wagmi";
 import { callRegistryAbi } from "../contracts/abis";
 import { CHAIN, DEPLOY_BLOCK, REGISTRY_ADDRESS, isDeployed } from "../contracts/addresses";
@@ -43,6 +43,29 @@ export interface ProtocolCall {
   readonly revealed?: RevealedDetail;
 }
 
+/**
+ * Reads `getCall` for every id, batching when the chain can.
+ *
+ * `multicall` needs Multicall3 deployed at its canonical address, which every
+ * public network has and a freshly started local node does not. Falling back to
+ * one request per call is slower and correct; throwing would make the whole
+ * registry unreadable on the demo node.
+ */
+async function readCallStates(client: PublicClient, ids: readonly bigint[]) {
+  const contracts = ids.map((id) => ({
+    address: REGISTRY_ADDRESS,
+    abi: callRegistryAbi,
+    functionName: "getCall" as const,
+    args: [id] as const,
+  }));
+
+  if (client.chain?.contracts?.multicall3) {
+    return client.multicall({ contracts, allowFailure: false });
+  }
+
+  return Promise.all(contracts.map((contract) => client.readContract(contract)));
+}
+
 const committedEvent = getAbiItem({ abi: callRegistryAbi, name: "CallCommitted" });
 const revealedEvent = getAbiItem({ abi: callRegistryAbi, name: "CallRevealed" });
 
@@ -70,18 +93,7 @@ export function useCalls() {
 
       const ids = Array.from({ length: Number(callCount) }, (_, index) => BigInt(index));
 
-      const states =
-        ids.length === 0
-          ? []
-          : await client.multicall({
-              contracts: ids.map((id) => ({
-                address: REGISTRY_ADDRESS,
-                abi: callRegistryAbi,
-                functionName: "getCall" as const,
-                args: [id] as const,
-              })),
-              allowFailure: false,
-            });
+      const states = ids.length === 0 ? [] : await readCallStates(client, ids);
 
       // Best-effort half. A failure here degrades the leaderboard, so it is
       // caught rather than allowed to fail the whole query.
