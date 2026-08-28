@@ -277,9 +277,11 @@ Detail in [`docs/architecture.md`](./docs/architecture.md). The eight properties
 the protocol claims, each mapped to the test that pins it, are in
 [`docs/invariants.md`](./docs/invariants.md); the attacks and the residual risks
 are in [`docs/threat-model.md`](./docs/threat-model.md). Every non-obvious choice
-is recorded in [`docs/decisions.md`](./docs/decisions.md), and
-[`docs/worklog.md`](./docs/worklog.md) tracks what is built so far and what comes
-next.
+is recorded in [`docs/decisions.md`](./docs/decisions.md).
+[`docs/checkpoint.md`](./docs/checkpoint.md) is the one page to read before
+picking the project up: what each piece is, why it exists, and the work still
+owed. [`docs/worklog.md`](./docs/worklog.md) is the narrative of how it got
+here.
 
 ## Stack
 
