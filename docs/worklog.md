@@ -31,8 +31,9 @@ trailers.**
 | F4    | Ignition deploy module                       | done — module written and tested on the simulated network |
 | F6    | CI + docs                                    | done — GitHub Actions, invariants doc, threat model       |
 | F5    | Frontend                                     | done — 1 commit. Four screens, type-checked and built     |
+| F7    | Local demo harness                           | done — 1 commit. `npm run demo`, ADR-015                  |
+| —     | First push to a remote                       | done — github.com/cirola/proof-of-call, 2026-08-28        |
 | —     | Actual Sepolia deployment + Etherscan verify | **next** — needs a funded faucet wallet                   |
-| —     | First push to a remote                       | pending — CI has still never executed                     |
 
 ## Verify the current state in one command
 
@@ -316,10 +317,12 @@ with an empty console.
   but it is the first suspect for any strange path error.
 - Git identity is **repo-local**, not global: `Ciro Urrustarazu`,
   `67176499+cirola@users.noreply.github.com`.
-- Commits carry a `Co-Authored-By: Claude Opus 5` trailer. Still trivial to strip
-  while no remote exists, painful after.
-- **No remote is configured.** Nothing has been pushed anywhere. CI is written
-  and will run on the first push to GitHub, but has never executed.
+- The `Co-Authored-By: Claude Opus 5` and `Claude-Session:` trailers were
+  stripped from all 14 commits with `git filter-branch --msg-filter` on
+  2026-08-28, immediately before the first push. Trees were byte-identical
+  before and after; only messages changed. Do not add them back — the history is
+  public now and a second rewrite would break every clone.
+- **Remote is `origin` → `github.com/cirola/proof-of-call`**, public.
 - `forge-std` is installed from **GitHub** (`foundry-rs/forge-std#v1.9.7`), not
   from the `forge-std` npm package — that one is an unofficial third-party
   mirror pinned at 1.1.2. `npm ci` therefore needs git, which the CI runner has.
@@ -330,20 +333,49 @@ with an empty console.
 
 ---
 
+## Session 4 — 2026-08-28
+
+Two things: the repository went public, and it became runnable in one command.
+
+### The demo
+
+`npm run demo` starts a Hardhat node, deploys the **real** Ignition module
+against two `MockV3Aggregator` instances, publishes a round every five seconds,
+and serves the frontend already pointed at what it just deployed. Three Hardhat
+accounts commit calls, reveal most, and abandon about one in five so the forfeit
+path has something in it. ADR-015 records what is substituted and what is not.
+
+The reasoning worth keeping: the demo runs the deployment module rather than a
+parallel script, so a broken module breaks the demo. Only two things differ from
+Sepolia — mock aggregators, and two relaxed parameters set by an admin
+transaction after deployment (minimum horizon 1 hour → 2 minutes, reveal window
+48 hours → 1 hour). Both are named in a banner in the UI.
+
+### What the demo found
+
+Three real defects in the frontend, none of which the test suite could have
+caught because all three are chain-shaped rather than logic-shaped.
+
+| Symptom                                              | Cause                                                                                        | Fix                                                                                    |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Calls page empty while the registry had twelve calls | `client.multicall` needs Multicall3 at its canonical address; a fresh local node has none    | Fall back to one `readContract` per call when `chain.contracts.multicall3` is absent   |
+| Explorer links pointed at Etherscan on a local chain | `EXPLORER_URL` fell back to a Sepolia literal instead of admitting the chain has no explorer | `explorerTx`/`explorerAddress` return `undefined`; new `ExplorerLink` degrades to text |
+| `tsc` rejected the wagmi transports record           | `CHAIN` as a union of two chains makes every id-keyed type demand both                       | `CHAIN` is typed `Chain`, so the build configures only the chain it targets            |
+
+The first is the one worth remembering. It failed **silently** — no console
+error, no error state, just an empty table — because the throw happened inside a
+react-query `queryFn` whose result the page renders as "the registry is empty".
+
+### The push
+
+Trailers stripped from all 14 commits, backup branch taken first, trees verified
+identical, then `gh repo create --public --push`. CI ran for the first time.
+
+---
+
 ## Next session — start here
 
-There is no code left in the plan. Two things stand between this and done, and
-both need a decision rather than a keyboard.
-
-### 1. Decide about the remote, before there is one
-
-- **Strip the `Co-Authored-By: Claude Opus 5` trailers** if this is going public.
-  Trivial while no remote exists, painful afterwards.
-- Then add a remote and push. **CI has never executed.** It is written and now
-  has two jobs — contracts, and the frontend build with the ABI drift check — and
-  the first push is the first time either runs.
-
-### 2. The Sepolia deployment
+### 1. The Sepolia deployment
 
 `npm run deploy:sepolia` is wired and the module is exercised by a test on the
 simulated network, but it has never been pointed at a real chain. It needs:
@@ -384,3 +416,5 @@ Afterwards:
 - **Frontend tests.** There are none. The two worth writing are `roundSearch`
   against a mock aggregator, and the `parsePrice` boundary — both are places
   where being wrong is silent.
+- **A recorded walkthrough of `npm run demo`.** A GIF in the README would let a
+  reader see the commit → reveal loop without cloning anything.

@@ -3,9 +3,10 @@
 An on-chain registry for market predictions, where the track record includes the
 losses because the protocol will not let you delete them.
 
-> **Status:** contracts and frontend complete. Phases F0–F6 done — scaffold,
-> oracle layer, full commit-reveal lifecycle, Ignition deployment module, CI, and
-> the React client. 122 tests, 100% line and statement coverage on both
+> **Status:** contracts and frontend complete, and runnable locally in one
+> command — see [See it running](#see-it-running). Scaffold, oracle layer, full
+> commit-reveal lifecycle, Ignition deployment module, CI, the React client and
+> the demo harness are done. 122 tests, 100% line and statement coverage on both
 > production contracts. Deployment links land when the Sepolia deployment is run.
 
 ---
